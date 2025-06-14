@@ -71,4 +71,8 @@ pub fn build(b: *std.Build) void {
 
     const run_qemu_step = b.step("run", "Run QEMU");
     run_qemu_step.dependOn(&qemu_cmd.step);
+
+    const check_step = b.step("check", "Check");
+    check_step.dependOn(&surtr.step);
+    check_step.dependOn(&ymir.step);
 }

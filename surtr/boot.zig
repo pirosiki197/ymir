@@ -3,6 +3,7 @@ const uefi = std.os.uefi;
 const elf = std.elf;
 const log = std.log.scoped(.surtr);
 const blog = @import("log.zig");
+const page = @import("arch/x86/page.zig");
 pub const std_options = blog.default_log_option;
 
 pub fn main() uefi.Status {
@@ -60,6 +61,17 @@ pub fn main() uefi.Status {
     log.info("Parsed kernel ELF header.", .{});
 
     log.debug("Kernel information: Entry Point: 0x{X}", .{elf_header.entry});
+
+    page.setLv4Writable(boot_service) catch |err| {
+        log.err("Failed to set page table writable: {?}", .{err});
+        return .load_error;
+    };
+    log.debug("Set page table writable.", .{});
+
+    page.map4kTo(0xFFFF_FFFF_DEAD_0000, 0x10_0000, .read_write, boot_service) catch |err| {
+        log.err("Failed to map 4KiB page: {?}", .{err});
+        return .aborted;
+    };
 
     while (true) {
         asm volatile ("hlt");
