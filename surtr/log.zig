@@ -1,7 +1,14 @@
 const std = @import("std");
 const uefi = std.os.uefi;
+const option = @import("option");
 
 pub const default_log_option = std.Options{
+    .log_level = switch (option.log_level) {
+        .debug => .debug,
+        .info => .info,
+        .warn => .warn,
+        .err => .err,
+    },
     .logFn = log,
 };
 

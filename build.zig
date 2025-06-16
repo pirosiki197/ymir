@@ -3,6 +3,28 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
+    const s_log_level = b.option(
+        []const u8,
+        "log_level",
+        "log_level",
+    ) orelse "info";
+    const log_level: std.log.Level = blk: {
+        const eql = std.mem.eql;
+        break :blk if (eql(u8, s_log_level, "debug"))
+            .debug
+        else if (eql(u8, s_log_level, "info"))
+            .info
+        else if (eql(u8, s_log_level, "warn"))
+            .warn
+        else if (eql(u8, s_log_level, "error"))
+            .err
+        else
+            @panic("Invalid log level");
+    };
+
+    const options = b.addOptions();
+    options.addOption(std.log.Level, "log_level", log_level);
+
     const surtr = b.addExecutable(.{
         .name = "BOOTX64.EFI",
         .root_source_file = b.path("surtr/boot.zig"),
@@ -13,6 +35,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .linkage = .static,
     });
+    surtr.root_module.addOptions("option", options);
     b.installArtifact(surtr);
 
     const out_dir_name = "img";
@@ -39,6 +62,7 @@ pub fn build(b: *std.Build) void {
         .linkage = .static,
     });
     ymir.entry = .{ .symbol_name = "kernelEntry" };
+    ymir.linker_script = b.path("ymir/linker.ld");
     b.installArtifact(ymir);
 
     const install_ymir = b.addInstallFile(
