@@ -3,6 +3,7 @@ const uefi = std.os.uefi;
 const elf = std.elf;
 const log = std.log.scoped(.surtr);
 const blog = @import("log.zig");
+const defs = @import("defs.zig");
 const page = @import("arch/x86/page.zig");
 pub const std_options = blog.default_log_option;
 
@@ -37,21 +38,9 @@ pub fn main() uefi.Status {
         return status;
     }
     log.info("Opened filesystem volume.", .{});
-    defer {
-        status = root_dir.close();
-        if (status != .success) {
-            log.err("Failed to close filesystem volume.", .{});
-        }
-    }
 
     const kernel = openFile(root_dir, "ymir.elf") catch return .aborted;
     log.info("Opended kernel file.", .{});
-    defer {
-        status = kernel.close();
-        if (status != .success) {
-            log.err("Failed to close kernel file.", .{});
-        }
-    }
 
     var header_size: usize = @sizeOf(elf.Elf64_Ehdr);
     var header_buffer: [*]align(8) u8 = undefined;
@@ -59,12 +48,6 @@ pub fn main() uefi.Status {
     if (status != .success) {
         log.err("Failed to allocate memory for kernel ELF header.", .{});
         return status;
-    }
-    defer {
-        status = boot_service.freePool(header_buffer);
-        if (status != .success) {
-            log.err("Failed to free memory for kernel ELF header.", .{});
-        }
     }
 
     status = kernel.read(&header_size, header_buffer);
@@ -151,10 +134,74 @@ pub fn main() uefi.Status {
         }
     }
 
-    while (true) {
-        asm volatile ("hlt");
+    const map_buffer_size = page_size * 4;
+    var map_buffer: [map_buffer_size]u8 = undefined;
+    var map = defs.MemoryMap{
+        .buffer_size = map_buffer.len,
+        .descriptors = @alignCast(@ptrCast(&map_buffer)),
+        .map_key = 0,
+        .map_size = map_buffer.len,
+        .descriptor_size = 0,
+        .descriptor_version = 0,
+    };
+    status = getMemoryMap(&map, boot_service);
+    if (status != .success) {
+        log.err("Failed to get memory map.", .{});
+        return status;
     }
-    return .success;
+
+    var map_iter = defs.MemoryDescriptorIterator.new(map);
+    while (map_iter.next()) |md| {
+        log.debug(
+            "  0x{X:0>16} - 0x{X:0>16} : {s}",
+            .{ md.physical_start, md.physical_start + md.number_of_pages * page_size, @tagName(md.type) },
+        );
+    }
+
+    // clean up
+    status = boot_service.freePool(header_buffer);
+    if (status != .success) {
+        log.err("Failed to free memory for kernel ELF header.", .{});
+        return status;
+    }
+    status = kernel.close();
+    if (status != .success) {
+        log.err("Failed to close kernel file.", .{});
+        return status;
+    }
+    status = root_dir.close();
+    if (status != .success) {
+        log.err("Failed to close filesystem volume.", .{});
+        return status;
+    }
+
+    log.info("Exiting boot services.", .{});
+    status = boot_service.exitBootServices(uefi.handle, map.map_key);
+    if (status != .success) {
+        map.buffer_size = map_buffer.len;
+        map.map_size = map_buffer.len;
+        status = getMemoryMap(&map, boot_service);
+        if (status != .success) {
+            log.err("Failed to get memory map after failed to exit boot services.", .{});
+            return status;
+        }
+        status = boot_service.exitBootServices(uefi.handle, map.map_key);
+        if (status != .success) {
+            log.err("Failed to exit boot services.", .{});
+            return status;
+        }
+    }
+
+    const boot_info = defs.BootInfo{
+        .magic = defs.magic,
+        .memory_map = map,
+    };
+
+    const KernelEntryType = fn (defs.BootInfo) callconv(.{ .x86_64_win = .{} }) noreturn;
+    const kernel_entry: *KernelEntryType = @ptrFromInt(elf_header.entry);
+
+    kernel_entry(boot_info);
+    unreachable;
 }
 
 fn openFile(root: *const uefi.protocol.File, comptime name: [:0]const u8) !*uefi.protocol.File {
@@ -165,6 +212,16 @@ fn openFile(root: *const uefi.protocol.File, comptime name: [:0]const u8) !*uefi
         return error.aborted;
     }
     return @constCast(file);
+}
+
+fn getMemoryMap(map: *defs.MemoryMap, bs: *uefi.tables.BootServices) uefi.Status {
+    return bs.getMemoryMap(
+        &map.map_size,
+        map.descriptors,
+        &map.map_key,
+        &map.descriptor_size,
+        &map.descriptor_version,
+    );
 }
 
 inline fn toUcs2(comptime s: [:0]const u8) [s.len:0]u16 {

@@ -25,14 +25,19 @@ pub fn build(b: *std.Build) void {
     const options = b.addOptions();
     options.addOption(std.log.Level, "log_level", log_level);
 
+    const surtr_module = b.createModule(.{
+        .root_source_file = b.path("surtr/defs.zig"),
+    });
     const surtr = b.addExecutable(.{
         .name = "BOOTX64.EFI",
-        .root_source_file = b.path("surtr/boot.zig"),
-        .target = b.resolveTargetQuery(.{
-            .cpu_arch = .x86_64,
-            .os_tag = .uefi,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("surtr/boot.zig"),
+            .target = b.resolveTargetQuery(.{
+                .cpu_arch = .x86_64,
+                .os_tag = .uefi,
+            }),
+            .optimize = optimize,
         }),
-        .optimize = optimize,
         .linkage = .static,
     });
     surtr.root_module.addOptions("option", options);
@@ -63,6 +68,7 @@ pub fn build(b: *std.Build) void {
     });
     ymir.entry = .{ .symbol_name = "kernelEntry" };
     ymir.linker_script = b.path("ymir/linker.ld");
+    ymir.root_module.addImport("surtr", surtr_module);
     b.installArtifact(ymir);
 
     const install_ymir = b.addInstallFile(
