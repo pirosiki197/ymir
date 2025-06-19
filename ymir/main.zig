@@ -1,4 +1,9 @@
 const surtr = @import("surtr");
+const ymir = @import("ymir");
+const Serial = ymir.serial.Serial;
+const klog = ymir.klog;
+const log = @import("std").log.scoped(.main);
+pub const std_options = klog.default_log_options;
 
 extern const __stackguard_lower: [*]const u8;
 
@@ -21,8 +26,14 @@ export fn kernelTrampoline(boot_info: surtr.BootInfo) callconv(.{ .x86_64_win = 
 
 fn kernelMain(boot_info: surtr.BootInfo) !void {
     validateBootInfo(boot_info) catch {
+        log.err("Invalid boot info.", .{});
         return error.InvalidBootInfo;
     };
+
+    const serial = Serial.init();
+    klog.init(serial);
+    log.info("Hello, world!", .{});
+
     while (true) asm volatile ("hlt");
 }
 
