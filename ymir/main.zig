@@ -1,5 +1,6 @@
 const surtr = @import("surtr");
 const ymir = @import("ymir");
+const arch = ymir.arch;
 const Serial = ymir.serial.Serial;
 const klog = ymir.klog;
 const log = @import("std").log.scoped(.main);
@@ -33,6 +34,8 @@ fn kernelMain(boot_info: surtr.BootInfo) !void {
     const serial = Serial.init();
     klog.init(serial);
     log.info("Hello, world!", .{});
+    arch.gdt.init();
+    log.info("Initialized GDT.", .{});
 
     while (true) asm volatile ("hlt");
 }
