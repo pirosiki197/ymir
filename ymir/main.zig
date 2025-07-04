@@ -36,6 +36,8 @@ fn kernelMain(boot_info: surtr.BootInfo) !void {
     log.info("Hello, world!", .{});
     arch.gdt.init();
     log.info("Initialized GDT.", .{});
+    arch.itr.init();
+    log.info("Initialized IDT.", .{});
 
     while (true) asm volatile ("hlt");
 }
