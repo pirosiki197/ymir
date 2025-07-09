@@ -4,6 +4,7 @@ const arch = ymir.arch;
 const Serial = ymir.serial.Serial;
 const klog = ymir.klog;
 const log = @import("std").log.scoped(.main);
+const mem = ymir.mem;
 pub const std_options = klog.default_log_options;
 
 extern const __stackguard_lower: [*]const u8;
@@ -38,6 +39,13 @@ fn kernelMain(boot_info: surtr.BootInfo) !void {
     log.info("Initialized GDT.", .{});
     arch.itr.init();
     log.info("Initialized IDT.", .{});
+    mem.initPageAllocator(boot_info.memory_map);
+    log.info("Initialized page allocator.", .{});
+    const page_allocator = mem.page_allocator;
+
+    const array = try page_allocator.alloc(u32, 4);
+    log.info("Memory allocated @ {X:0>16}", .{@intFromPtr(array.ptr)});
+    page_allocator.free(array);
 
     while (true) asm volatile ("hlt");
 }

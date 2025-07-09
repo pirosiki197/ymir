@@ -1,6 +1,11 @@
 const std = @import("std");
 const uefi = std.os.uefi;
 
+pub const Phys = u64;
+pub const Virt = u64;
+
+pub const page_size = 4096;
+
 pub const magic: usize = 0xDEADBEEF_CAFEBABE;
 
 pub const BootInfo = extern struct {

@@ -37,6 +37,12 @@ pub fn build(b: *std.Build) void {
                 .os_tag = .uefi,
             }),
             .optimize = optimize,
+            .imports = &.{
+                .{
+                    .name = "surtr",
+                    .module = surtr_module,
+                },
+            },
         }),
         .linkage = .static,
     });
@@ -60,6 +66,12 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("ymir/ymir.zig"),
         .target = ymir_target,
         .optimize = optimize,
+        .imports = &.{
+            .{
+                .name = "surtr",
+                .module = surtr_module,
+            },
+        },
     });
     ymir_module.addImport("ymir", ymir_module);
     ymir_module.addOptions("option", options);

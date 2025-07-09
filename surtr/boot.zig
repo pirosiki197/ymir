@@ -2,12 +2,12 @@ const std = @import("std");
 const uefi = std.os.uefi;
 const elf = std.elf;
 const log = std.log.scoped(.surtr);
+const defs = @import("surtr");
 const blog = @import("log.zig");
-const defs = @import("defs.zig");
 const page = @import("arch/x86/page.zig");
 pub const std_options = blog.default_log_option;
 
-const page_size = 4096;
+const page_size = defs.page_size;
 
 pub fn main() uefi.Status {
     var status: uefi.Status = undefined;

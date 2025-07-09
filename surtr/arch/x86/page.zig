@@ -1,8 +1,8 @@
 const am = @import("asm.zig");
 const BootServices = @import("std").os.uefi.tables.BootServices;
-
-pub const Phys = u64;
-pub const Virt = u64;
+const surtr = @import("surtr");
+const Phys = surtr.Phys;
+const Virt = surtr.Virt;
 
 const TableLevel = enum { lv4, lv3, lv2, lv1 };
 
