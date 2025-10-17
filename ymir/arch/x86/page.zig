@@ -1,8 +1,11 @@
+const std = @import("std");
+const BootServices = std.os.uefi.tables.BootServices;
+const Allocator = std.mem.Allocator;
 const am = @import("asm.zig");
-const BootServices = @import("std").os.uefi.tables.BootServices;
 const surtr = @import("surtr");
 const Phys = surtr.Phys;
 const Virt = surtr.Virt;
+const ymir = @import("ymir");
 
 const TableLevel = enum { lv4, lv3, lv2, lv1 };
 
@@ -66,6 +69,7 @@ const Lv3Entry = EntryBase(.lv3);
 const Lv2Entry = EntryBase(.lv2);
 const Lv1Entry = EntryBase(.lv1);
 
+const page_size_4k = 4096;
 const page_mask_4k: u64 = 0xFFF;
 const num_table_entries: usize = 512;
 
@@ -118,10 +122,24 @@ pub const PageAttribute = enum {
     executable,
 };
 
-fn allocateNewTable(T: type, entry: *T, bs: *BootServices) BootServices.AllocatePagesError!void {
-    const page = try bs.allocatePages(.any, .boot_services_data, 1);
-    clearPage(@intFromPtr(page.ptr));
-    entry.* = T.newMapTable(@ptrCast(page.ptr), true);
+pub const PageError = error{
+    NoMemory,
+    NotPresent,
+    OutOfMemory,
+    notCanonical,
+    invalidAddress,
+    already_mapped,
+};
+
+fn allocateNewTable(T: type, entry: *T, bs: *BootServices) PageError!void {
+    var ptr: Phys = undefined;
+    const status = bs.allocatePages(.allocate_any_pages, .boot_services_data, 1, @ptrCast(&ptr));
+    if (status != .success) {
+        return PageError.NoMemory;
+    }
+
+    clearPage(ptr);
+    entry.* = T.newMapTable(@ptrFromInt(ptr), true);
 }
 
 fn clearPage(addr: Phys) void {
@@ -129,18 +147,21 @@ fn clearPage(addr: Phys) void {
     @memset(page_ptr[0..4096], 0);
 }
 
-pub fn setLv4Writable(bs: *BootServices) BootServices.AllocatePagesError!void {
-    const page = try bs.allocatePages(.any, .boot_services_data, 1);
-    const new_lv4ptr: [*]Lv4Entry = @ptrCast(page.ptr);
-    const new_lv4tbl: []Lv4Entry = new_lv4ptr[0..num_table_entries];
+pub fn setLv4Writable(bs: *BootServices) PageError!void {
+    var new_lv4ptr: [*]Lv4Entry = undefined;
+    const status = bs.allocatePages(.allocate_any_pages, .boot_services_data, 1, @ptrCast(&new_lv4ptr));
+    if (status != .success) {
+        return PageError.NoMemory;
+    }
 
+    const new_lv4tbl = new_lv4ptr[0..num_table_entries];
     const lv4tbl = getLv4Table(am.readCr3());
     @memcpy(new_lv4tbl, lv4tbl);
 
     am.loadCr3(@intFromPtr(new_lv4tbl.ptr));
 }
 
-pub fn map4kTo(virt: Virt, phys: Phys, attr: PageAttribute, bs: *BootServices) BootServices.AllocatePagesError!void {
+pub fn map4kTo(virt: Virt, phys: Phys, attr: PageAttribute, bs: *BootServices) PageError!void {
     const rw = switch (attr) {
         .read_only, .executable => false,
         .read_write => true,
@@ -156,9 +177,36 @@ pub fn map4kTo(virt: Virt, phys: Phys, attr: PageAttribute, bs: *BootServices) B
     if (!lv2ent.present) try allocateNewTable(Lv2Entry, lv2ent, bs);
 
     const lv1ent = getLv1Entry(virt, lv2ent.address());
-    if (lv1ent.present) return BootServices.AllocatePagesError.InvalidParameter;
+    if (lv1ent.present) return PageError.already_mapped;
     var new_lv1ent = Lv1Entry.newMapPage(phys, true);
 
     new_lv1ent.rw = rw;
     lv1ent.* = new_lv1ent;
+}
+
+fn allocatePage(allocator: Allocator) PageError![*]align(page_size_4k) u8 {
+    return (allocator.alignedAlloc(
+        u8,
+        page_size_4k,
+        page_size_4k,
+    ) catch return PageError.OutOfMemory).ptr;
+}
+
+pub fn reconstruct(allocator: Allocator) PageError!void {
+    const lv4tbl_ptr: [*]Lv4Entry = @ptrCast(try allocatePage(allocator));
+    const lv4tbl = lv4tbl_ptr[0..num_table_entries]; // 512
+    const lv4_shift = 39;
+    const lv3_shift = 31;
+    @memset(lv4tbl, std.mem.zeroes(Lv4Entry));
+
+    const lv4idx_start = (ymir.direct_map_base >> lv4_shift) & 0xF_FFFF_FFFF; // TODO: index_mask
+    const lv4idx_end = lv4idx_start + (ymir.direct_map_size >> lv4_shift);
+
+    for (lv4tbl[lv4idx_start..lv4idx_end], 0..) |*lv4ent, i| {
+        const lv3tbl: [*]Lv3Entry = @ptrCast(try allocatePage(allocator));
+        for (0..num_table_entries) |lv3idx| {
+            lv3tbl[lv3idx] = Lv3Entry.newMapPage((i << lv4_shift) + (lv3idx << lv3_shift), true);
+        }
+        lv4ent.* = Lv4Entry.newMapTable(lv3tbl, true);
+    }
 }

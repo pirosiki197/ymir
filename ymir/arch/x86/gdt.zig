@@ -177,7 +177,7 @@ const GdtRegister = packed struct {
 
 fn setTss(tss: Virt) void {
     const desc = TssDescriptor.new(tss, std.math.maxInt(u20));
-    @as(*TssDescriptor, @alignCast(@ptrCast(&gdt[kernel_tss_index]))).* = desc;
+    @as(*TssDescriptor, @ptrCast(@alignCast(&gdt[kernel_tss_index]))).* = desc;
 }
 
 fn loadKernelTss() void {
@@ -189,7 +189,7 @@ fn loadKernelTss() void {
             .rpl = 0,
             .index = kernel_tss_index,
           }))),
-        : "di"
+        : .{ .di = true }
     );
 }
 
@@ -206,7 +206,7 @@ fn loadKernelDs() void {
             .rpl = 0,
             .index = kernel_ds_index,
           }))),
-        : "di"
+        : .{ .di = true }
     );
 }
 

@@ -14,7 +14,6 @@ pub const BootInfo = extern struct {
 };
 
 pub const MemoryMap = extern struct {
-    buffer_size: usize,
     descriptors: [*]uefi.tables.MemoryDescriptor,
     map_size: usize,
     map_key: usize,

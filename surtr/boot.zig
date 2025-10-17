@@ -2,69 +2,73 @@ const std = @import("std");
 const uefi = std.os.uefi;
 const elf = std.elf;
 const log = std.log.scoped(.surtr);
+const builtin = @import("builtin");
 const defs = @import("surtr");
 const blog = @import("log.zig");
 const page = @import("arch/x86/page.zig");
+
 pub const std_options = blog.default_log_option;
+const BootServices = uefi.tables.BootServices;
+const MemoryDescriptor = uefi.tables.MemoryDescriptor;
 
 const page_size = defs.page_size;
 
-pub fn main() uefi.Status {
-    var status: uefi.Status = undefined;
-
-    const con_out = uefi.system_table.con_out orelse return .aborted;
-    status = con_out.clearScreen();
+pub fn main() uefi.Error!void {
+    const con_out = uefi.system_table.con_out orelse return error.Aborted;
+    try con_out.clearScreen();
 
     blog.init(con_out);
 
     const boot_service: *uefi.tables.BootServices = uefi.system_table.boot_services orelse {
         log.err("Failed to get boot services.", .{});
-        return .aborted;
+        return error.Aborted;
     };
     log.info("Got boot services.", .{});
 
-    var fs: *uefi.protocol.SimpleFileSystem = undefined;
-    status = boot_service.locateProtocol(&uefi.protocol.SimpleFileSystem.guid, null, @ptrCast(&fs));
-    if (status != .success) {
-        log.err("Failed to locate simple file system protocol.", .{});
-        return status;
-    }
+    var fs = boot_service.locateProtocol(uefi.protocol.SimpleFileSystem, null) catch |err| {
+        log.err("Failed to locate simple file system protocol: {}", .{err});
+        return err;
+    } orelse return;
     log.info("Located simple file system protocol.", .{});
 
-    var root_dir: *const uefi.protocol.File = undefined;
-    status = fs.openVolume(&root_dir);
-    if (status != .success) {
-        log.err("Failed to open volume.", .{});
-        return status;
-    }
+    var root_dir = fs.openVolume() catch |err| {
+        log.err("Failed to open volume: {}", .{err});
+        return err;
+    };
     log.info("Opened filesystem volume.", .{});
 
-    const kernel = openFile(root_dir, "ymir.elf") catch return .aborted;
+    const kernel = openFile(root_dir, "ymir.elf") catch |err| {
+        log.err("Failed to open kernel file.", .{});
+        return err;
+    };
     log.info("Opended kernel file.", .{});
 
-    var header_size: usize = @sizeOf(elf.Elf64_Ehdr);
-    var header_buffer: [*]align(8) u8 = undefined;
-    status = boot_service.allocatePool(.loader_data, header_size, &header_buffer);
-    if (status != .success) {
+    const header_size: usize = @sizeOf(elf.Elf64_Ehdr);
+    const header_buffer = boot_service.allocatePool(.loader_data, header_size) catch |err| {
         log.err("Failed to allocate memory for kernel ELF header.", .{});
-        return status;
-    }
-
-    status = kernel.read(&header_size, header_buffer);
-    if (status != .success) {
-        log.err("Failed to read kernel ELF header.", .{});
-        return status;
-    }
-
-    const elf_header = elf.Header.parse(header_buffer[0..@sizeOf(elf.Elf64_Ehdr)]) catch |err| {
-        log.err("Failed to parse kernel ELF header: {?}", .{err});
-        return .aborted;
+        return err;
     };
-    log.info("Parsed kernel ELF header.", .{});
+
+    _ = kernel.read(header_buffer) catch |err| {
+        log.err("Failed to read kernel ELF header.", .{});
+        return err;
+    };
+
+    const elf64_header = std.mem.bytesToValue(elf.Elf64_Ehdr, header_buffer.ptr);
+    const endian: std.builtin.Endian = switch (elf64_header.e_ident[elf.EI_DATA]) {
+        elf.ELFDATA2LSB => .little,
+        elf.ELFDATA2MSB => .big,
+        else => {
+            log.err("Invalid ELF data encoding: {}", .{elf64_header.e_ident[elf.EI_DATA]});
+            return error.LoadError;
+        },
+    };
+
+    const elf_header = elf.Header.init(elf64_header, endian);
 
     page.setLv4Writable(boot_service) catch |err| {
-        log.err("Failed to set page table writable: {?}", .{err});
-        return .load_error;
+        log.err("Failed to set page table writable: {}", .{err});
+        return err;
     };
     log.debug("Set page table writable.", .{});
 
@@ -73,11 +77,11 @@ pub fn main() uefi.Status {
     var kernel_start_phys: Addr align(page_size) = std.math.maxInt(Addr);
     var kernel_end_phys: Addr = 0;
 
-    var iter = elf_header.program_header_iterator(kernel);
+    var iter = ProgramHeaderIterator.init(elf_header, kernel);
     while (true) {
         const phdr = iter.next() catch |err| {
-            log.err("Failed to get program header: {?}", .{err});
-            return .load_error;
+            log.err("Failed to get program header: {}", .{err});
+            return err;
         } orelse break;
         if (phdr.p_type != elf.PT_LOAD) continue;
         if (phdr.p_paddr < kernel_start_phys) kernel_start_phys = phdr.p_paddr;
@@ -88,11 +92,10 @@ pub fn main() uefi.Status {
     const pages_4kib = (kernel_end_phys - kernel_start_phys + (page_size - 1)) / page_size;
     log.info("Kernel image: 0x{X:0>16} - 0x{X:0>16} (0x{X} pages)", .{ kernel_start_phys, kernel_end_phys, pages_4kib });
 
-    status = boot_service.allocatePages(.allocate_address, .loader_data, pages_4kib, @ptrCast(&kernel_start_phys));
-    if (status != .success) {
-        log.err("Failed to allocate memory for kernel image: {?}", .{status});
-        return status;
-    }
+    _ = boot_service.allocatePages(.{ .address = @ptrFromInt(kernel_start_phys) }, .loader_data, pages_4kib) catch |err| {
+        log.err("Failed to allocate memory for kernel image: {}", .{err});
+        return err;
+    };
     log.info("Allocated memory for kernel image @ 0x{X:0>16} ~ 0x{X:0>16}", .{ kernel_start_phys, kernel_start_phys + pages_4kib * page_size });
 
     for (0..pages_4kib) |i| {
@@ -102,55 +105,48 @@ pub fn main() uefi.Status {
             .read_write,
             boot_service,
         ) catch |err| {
-            log.err("Failed to map memory for kernel image: {?}", .{err});
-            return .load_error;
+            log.err("Failed to map memory for kernel image: {}", .{err});
+            return err;
         };
     }
 
-    iter = elf_header.program_header_iterator(kernel);
+    iter = ProgramHeaderIterator.init(elf_header, kernel);
     while (true) {
         const phdr = iter.next() catch |err| {
-            log.err("Failed to get program header: {?}", .{err});
-            return .load_error;
+            log.err("Failed to get program header: {}", .{err});
+            return error.LoadError;
         } orelse break;
         if (phdr.p_type != elf.PT_LOAD) continue;
-        status = kernel.setPosition(phdr.p_offset);
-        if (status != .success) {
-            log.err("Failed to set position for kernel image.", .{});
-            return status;
-        }
+        kernel.setPosition(phdr.p_offset) catch |err| {
+            log.err("Failed to set position for kernel image: {}", .{err});
+            return err;
+        };
         const segment: [*]u8 = @ptrFromInt(phdr.p_vaddr);
-        var mem_size = phdr.p_memsz;
-        status = kernel.read(&mem_size, segment);
-        if (status != .success) {
+        _ = kernel.read(segment[0..phdr.p_memsz]) catch |err| {
             log.err("Failed to read kernel image.", .{});
-            return status;
-        }
+            return err;
+        };
         log.info("  Seg @ 0x{X:0>16} - 0x{X:0>16}", .{ phdr.p_vaddr, phdr.p_vaddr + phdr.p_memsz });
 
         const zero_count = phdr.p_memsz - phdr.p_filesz;
         if (zero_count > 0) {
-            boot_service.setMem(@ptrFromInt(phdr.p_vaddr + phdr.p_filesz), zero_count, 0);
+            const ptr: [*]u8 = @ptrFromInt(phdr.p_vaddr + phdr.p_filesz);
+            @memset(ptr[0..zero_count], 0);
         }
     }
 
     const map_buffer_size = page_size * 4;
-    var map_buffer: [map_buffer_size]u8 = undefined;
-    var map = defs.MemoryMap{
-        .buffer_size = map_buffer.len,
-        .descriptors = @alignCast(@ptrCast(&map_buffer)),
-        .map_key = 0,
-        .map_size = map_buffer.len,
-        .descriptor_size = 0,
-        .descriptor_version = 0,
+    var map_buffer: [map_buffer_size]u8 align(@alignOf(uefi.tables.MemoryDescriptor)) = undefined;
+    const map = boot_service.getMemoryMapInfo() catch |err| {
+        log.err("Failed to gete memory map info: {}", .{err});
+        return err;
     };
-    status = getMemoryMap(&map, boot_service);
-    if (status != .success) {
+    const memory_maps = boot_service.getMemoryMap(map_buffer[0..]) catch |err| {
         log.err("Failed to get memory map.", .{});
-        return status;
-    }
+        return err;
+    };
 
-    var map_iter = defs.MemoryDescriptorIterator.new(map);
+    var map_iter = memory_maps.iterator();
     while (map_iter.next()) |md| {
         log.debug(
             "  0x{X:0>16} - 0x{X:0>16} : {s}",
@@ -159,42 +155,40 @@ pub fn main() uefi.Status {
     }
 
     // clean up
-    status = boot_service.freePool(header_buffer);
-    if (status != .success) {
-        log.err("Failed to free memory for kernel ELF header.", .{});
-        return status;
-    }
-    status = kernel.close();
-    if (status != .success) {
+    boot_service.freePool(header_buffer.ptr) catch |err| {
+        log.err("Failed to free memory for kernel ELF header: {}", .{err});
+        return err;
+    };
+    kernel.close() catch |err| {
         log.err("Failed to close kernel file.", .{});
-        return status;
-    }
-    status = root_dir.close();
-    if (status != .success) {
+        return err;
+    };
+    root_dir.close() catch |err| {
         log.err("Failed to close filesystem volume.", .{});
-        return status;
-    }
+        return err;
+    };
 
     log.info("Exiting boot services.", .{});
-    status = boot_service.exitBootServices(uefi.handle, map.map_key);
-    if (status != .success) {
-        map.buffer_size = map_buffer.len;
-        map.map_size = map_buffer.len;
-        status = getMemoryMap(&map, boot_service);
-        if (status != .success) {
-            log.err("Failed to get memory map after failed to exit boot services.", .{});
-            return status;
-        }
-        status = boot_service.exitBootServices(uefi.handle, map.map_key);
-        if (status != .success) {
-            log.err("Failed to exit boot services.", .{});
-            return status;
-        }
-    }
+    boot_service.exitBootServices(uefi.handle, map.key) catch {
+        const map_info = boot_service.getMemoryMapInfo() catch |err| {
+            log.err("Faile to get memory map info: {}", .{err});
+            return err;
+        };
+        boot_service.exitBootServices(uefi.handle, map_info.key) catch |err| {
+            log.err("Failed to exit boot services: {}", .{err});
+            return err;
+        };
+    };
 
     const boot_info = defs.BootInfo{
         .magic = defs.magic,
-        .memory_map = map,
+        .memory_map = defs.MemoryMap{
+            .map_size = map.descriptor_size * map.len,
+            .descriptor_size = map.descriptor_size,
+            .map_key = @intFromEnum(map.key),
+            .descriptor_version = map.descriptor_version,
+            .descriptors = @ptrCast(&map_buffer),
+        },
     };
 
     const KernelEntryType = fn (defs.BootInfo) callconv(.{ .x86_64_win = .{} }) noreturn;
@@ -204,24 +198,8 @@ pub fn main() uefi.Status {
     unreachable;
 }
 
-fn openFile(root: *const uefi.protocol.File, comptime name: [:0]const u8) !*uefi.protocol.File {
-    var file: *const uefi.protocol.File = undefined;
-    const status = root.open(&file, &toUcs2(name), uefi.protocol.File.efi_file_mode_read, 0);
-    if (status != .success) {
-        log.err("Failed to open file: {s}", .{name});
-        return error.aborted;
-    }
-    return @constCast(file);
-}
-
-fn getMemoryMap(map: *defs.MemoryMap, bs: *uefi.tables.BootServices) uefi.Status {
-    return bs.getMemoryMap(
-        &map.map_size,
-        map.descriptors,
-        &map.map_key,
-        &map.descriptor_size,
-        &map.descriptor_version,
-    );
+fn openFile(root: *const uefi.protocol.File, comptime name: [:0]const u8) uefi.protocol.File.OpenError!*uefi.protocol.File {
+    return try root.open(&toUcs2(name), .read, .{});
 }
 
 inline fn toUcs2(comptime s: [:0]const u8) [s.len:0]u16 {
@@ -232,3 +210,39 @@ inline fn toUcs2(comptime s: [:0]const u8) [s.len:0]u16 {
     }
     return ucs2;
 }
+
+const ProgramHeaderIterator = struct {
+    header: elf.Header,
+    file: *uefi.protocol.File,
+    index: usize = 0,
+
+    const native_endian = builtin.cpu.arch.endian();
+
+    fn init(header: elf.Header, file: *uefi.protocol.File) ProgramHeaderIterator {
+        return .{
+            .header = header,
+            .file = file,
+        };
+    }
+
+    fn next(self: *ProgramHeaderIterator) !?elf.Elf64_Phdr {
+        if (self.index >= self.header.phnum) return null;
+        defer self.index += 1;
+
+        if (self.header.is_64) {
+            var phdr: elf.Elf64_Phdr = undefined;
+            const offset = self.header.phoff + @sizeOf(@TypeOf(phdr)) * self.index;
+            try self.file.setPosition(offset);
+            _ = try self.file.read(std.mem.asBytes(&phdr));
+
+            // ELF endianness matches native endianness.
+            if (self.header.endian == native_endian) return phdr;
+
+            // Convert fields to native endianness.
+            std.mem.byteSwapAllFields(elf.Elf64_Phdr, &phdr);
+            return phdr;
+        } else {
+            return null;
+        }
+    }
+};

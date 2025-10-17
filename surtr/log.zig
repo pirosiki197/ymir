@@ -26,7 +26,7 @@ const LogError = error{};
 
 fn writerFunction(_: void, bytes: []const u8) LogError!usize {
     for (bytes) |b| {
-        con_out.outputString(&[_:0]u16{b}).err() catch unreachable;
+        _ = con_out.outputString(&[_:0]u16{b}) catch unreachable;
     }
     return bytes.len;
 }
