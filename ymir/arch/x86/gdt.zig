@@ -1,5 +1,6 @@
 const std = @import("std");
 const am = @import("asm.zig");
+const log = @import("std").log.scoped(.gdt);
 
 pub const Phys = u64;
 pub const Virt = u64;
@@ -19,7 +20,8 @@ var gdtr = GdtRegister{
 };
 
 pub fn init() void {
-    gdtr.base = &gdt;
+    gdtr.base = @intFromPtr(&gdt);
+
     gdt[kernel_cs_index] = SegmentDescriptor.new(
         true,
         false,
@@ -38,8 +40,9 @@ pub fn init() void {
         0,
         .kbyte,
     );
+    gdt[kernel_tss_index] = SegmentDescriptor.newTss(0, 0, 0, .kbyte);
+
     am.lgdt(@intFromPtr(&gdtr));
-    setTss(@intFromPtr(&tss_unused));
     loadKernelDs();
     loadKernelCs();
     loadKernelTss();
@@ -103,6 +106,31 @@ pub const SegmentDescriptor = packed struct(u64) {
             .long = executable,
             .db = 0,
             .granularity = granularity,
+        };
+    }
+
+    pub fn newTss(
+        base: u32,
+        limit: u20,
+        dpl: u2,
+        granularity: Granularity,
+    ) SegmentDescriptor {
+        return SegmentDescriptor{
+            .limit_low = @truncate(limit),
+            .base_low = @truncate(base),
+            .accessed = true,
+            .rw = false,
+            .dc = false,
+            .executable = true,
+            .desc_type = .system,
+            .dpl = dpl,
+            .present = true,
+            .limit_high = @truncate(limit >> 16),
+            .avl = 0,
+            .long = false,
+            .db = 0,
+            .granularity = granularity,
+            .base_high = @truncate(base >> 24),
         };
     }
 };
@@ -172,7 +200,7 @@ pub const SegmentSelector = packed struct(u16) {
 
 const GdtRegister = packed struct {
     limit: u16,
-    base: *[max_num_gdt]SegmentDescriptor,
+    base: u64,
 };
 
 fn setTss(tss: Virt) void {
@@ -189,8 +217,7 @@ fn loadKernelTss() void {
             .rpl = 0,
             .index = kernel_tss_index,
           }))),
-        : .{ .di = true }
-    );
+        : .{ .di = true });
 }
 
 fn loadKernelDs() void {
@@ -206,8 +233,7 @@ fn loadKernelDs() void {
             .rpl = 0,
             .index = kernel_ds_index,
           }))),
-        : .{ .di = true }
-    );
+        : .{ .di = true });
 }
 
 fn loadKernelCs() void {

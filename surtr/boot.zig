@@ -137,10 +137,6 @@ pub fn main() uefi.Error!void {
 
     const map_buffer_size = page_size * 4;
     var map_buffer: [map_buffer_size]u8 align(@alignOf(uefi.tables.MemoryDescriptor)) = undefined;
-    const map = boot_service.getMemoryMapInfo() catch |err| {
-        log.err("Failed to gete memory map info: {}", .{err});
-        return err;
-    };
     const memory_maps = boot_service.getMemoryMap(map_buffer[0..]) catch |err| {
         log.err("Failed to get memory map.", .{});
         return err;
@@ -169,7 +165,7 @@ pub fn main() uefi.Error!void {
     };
 
     log.info("Exiting boot services.", .{});
-    boot_service.exitBootServices(uefi.handle, map.key) catch {
+    boot_service.exitBootServices(uefi.handle, memory_maps.info.key) catch {
         const map_info = boot_service.getMemoryMapInfo() catch |err| {
             log.err("Faile to get memory map info: {}", .{err});
             return err;
@@ -183,10 +179,10 @@ pub fn main() uefi.Error!void {
     const boot_info = defs.BootInfo{
         .magic = defs.magic,
         .memory_map = defs.MemoryMap{
-            .map_size = map.descriptor_size * map.len,
-            .descriptor_size = map.descriptor_size,
-            .map_key = @intFromEnum(map.key),
-            .descriptor_version = map.descriptor_version,
+            .map_size = memory_maps.info.descriptor_size * memory_maps.info.len,
+            .descriptor_size = memory_maps.info.descriptor_size,
+            .map_key = @intFromEnum(memory_maps.info.key),
+            .descriptor_version = memory_maps.info.descriptor_version,
             .descriptors = @ptrCast(&map_buffer),
         },
     };
