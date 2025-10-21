@@ -14,3 +14,12 @@ pub inline fn loadCr3(cr3: u64) void {
         : [cr3] "r" (cr3),
     );
 }
+
+pub inline fn flushTlbSingle(virt: u64) void {
+    asm volatile (
+        \\ invlpg (%[virt])
+        :
+        : [virt] "r" (virt),
+        : .{ .memory = true }
+    );
+}

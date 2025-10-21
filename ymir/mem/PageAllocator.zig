@@ -18,17 +18,11 @@ const Self = @This();
 const PageAllocator = Self;
 
 bitmap: BitMap,
-frame_begin: FrameID = 1,
+frame_begin: FrameID,
 frame_end: FrameID,
 
-pub fn newUninitialized() Self {
-    return Self{
-        .frame_end = undefined,
-        .bitmap = undefined,
-    };
-}
-
 pub fn init(self: *Self, map: MemoryMap) void {
+    self.frame_begin = 1;
     var avail_end: Phys = 0;
     var desc_iter = MemoryDescriptorIterator.new(map);
 
@@ -126,7 +120,7 @@ inline fn isUsableMemory(descriptor: *uefi.tables.MemoryDescriptor) bool {
 
 fn allocate(ctx: *anyopaque, n: usize, _: Alignment, _: usize) ?[*]u8 {
     const log = @import("std").log;
-    const self: *PageAllocator = @alignCast(@ptrCast(ctx));
+    const self: *PageAllocator = @ptrCast(@alignCast(ctx));
 
     const num_frames = (n + page_size - 1) / page_size;
     var start_frame = self.frame_begin;
@@ -142,7 +136,6 @@ fn allocate(ctx: *anyopaque, n: usize, _: Alignment, _: usize) ?[*]u8 {
         }
         if (i == num_frames) {
             self.markAllocated(start_frame, num_frames);
-            log.info("success!", .{});
             return @ptrFromInt(mem.phys2virt(frame2phys(start_frame)));
         }
 
@@ -156,7 +149,7 @@ fn remap(_: *anyopaque, _: []u8, _: Alignment, _: usize, _: usize) ?[*]u8 {
     @panic("PageAllocator does not support remapping.");
 }
 fn free(ctx: *anyopaque, slice: []u8, _: Alignment, _: usize) void {
-    const self: *PageAllocator = @alignCast(@ptrCast(ctx));
+    const self: *PageAllocator = @ptrCast(@alignCast(ctx));
 
     const num_frames = (slice.len + page_size - 1) / page_size;
     const start_frame_vaddr: Virt = @intFromPtr(slice.ptr) & ~page_mask;

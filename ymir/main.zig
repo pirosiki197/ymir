@@ -42,9 +42,11 @@ fn kernelMain(boot_info: surtr.BootInfo) !void {
     mem.initPageAllocator(boot_info.memory_map);
     log.info("Initialized page allocator.", .{});
     const page_allocator = mem.page_allocator;
+    log.info("Reconstructing memory mapping...", .{});
+    try mem.reconstructMapping(mem.page_allocator);
 
     const array = try page_allocator.alloc(u32, 4);
-    log.info("Memory allocated @ {X:0>16}", .{@intFromPtr(array.ptr)});
+    log.info("Memory allocated @ {*}", .{array.ptr});
     page_allocator.free(array);
 
     while (true) asm volatile ("hlt");

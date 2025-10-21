@@ -12,6 +12,7 @@ const BootServices = uefi.tables.BootServices;
 const MemoryDescriptor = uefi.tables.MemoryDescriptor;
 
 const page_size = defs.page_size;
+const page_mask = defs.page_mask;
 
 pub fn main() uefi.Error!void {
     const con_out = uefi.system_table.con_out orelse return error.Aborted;
@@ -132,6 +133,20 @@ pub fn main() uefi.Error!void {
         if (zero_count > 0) {
             const ptr: [*]u8 = @ptrFromInt(phdr.p_vaddr + phdr.p_filesz);
             @memset(ptr[0..zero_count], 0);
+        }
+
+        const page_start = phdr.p_vaddr & ~page_mask;
+        const page_end = (phdr.p_vaddr + phdr.p_memsz + (page_size - 1)) & ~page_mask;
+        const size = (page_end - page_start) / page_size;
+        const attribute = page.PageAttribute.fromFlags(phdr.p_flags);
+        for (0..size) |i| {
+            page.changeMap4k(
+                phdr.p_vaddr + page_size * i,
+                attribute,
+            ) catch |err| {
+                log.err("Failed to change memory protection: {}", .{err});
+                return error.LoadError;
+            };
         }
     }
 

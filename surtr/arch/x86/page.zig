@@ -1,3 +1,4 @@
+const elf = @import("std").elf;
 const am = @import("asm.zig");
 const BootServices = @import("std").os.uefi.tables.BootServices;
 const surtr = @import("surtr");
@@ -116,6 +117,20 @@ pub const PageAttribute = enum {
     read_only,
     read_write,
     executable,
+
+    pub fn fromFlags(flags: u32) PageAttribute {
+        if (flags & elf.PF_X != 0) {
+            return .executable;
+        } else if (flags & elf.PF_W != 0) {
+            return .read_write;
+        } else {
+            return .read_only;
+        }
+    }
+};
+
+const PageError = error{
+    NotPresent,
 };
 
 fn allocateNewTable(T: type, entry: *T, bs: *BootServices) BootServices.AllocatePagesError!void {
@@ -138,6 +153,30 @@ pub fn setLv4Writable(bs: *BootServices) BootServices.AllocatePagesError!void {
     @memcpy(new_lv4tbl, lv4tbl);
 
     am.loadCr3(@intFromPtr(new_lv4tbl.ptr));
+}
+
+pub fn changeMap4k(virt: Virt, attr: PageAttribute) PageError!void {
+    const rw = switch (attr) {
+        .read_only, .executable => false,
+        .read_write => true,
+    };
+    const xd = switch (attr) {
+        .executable => false,
+        .read_only, .read_write => true,
+    };
+
+    const lv4ent = getLv4Entry(virt, am.readCr3());
+    if (!lv4ent.present) return PageError.NotPresent;
+    const lv3ent = getLv3Entry(virt, lv4ent.address());
+    if (!lv3ent.present) return PageError.NotPresent;
+    const lv2ent = getLv2Entry(virt, lv3ent.address());
+    if (!lv2ent.present) return PageError.NotPresent;
+    const lv1ent = getLv1Entry(virt, lv2ent.address());
+    if (!lv1ent.present) return PageError.NotPresent;
+
+    lv1ent.rw = rw;
+    lv1ent.xd = xd;
+    am.flushTlbSingle(virt);
 }
 
 pub fn map4kTo(virt: Virt, phys: Phys, attr: PageAttribute, bs: *BootServices) BootServices.AllocatePagesError!void {
