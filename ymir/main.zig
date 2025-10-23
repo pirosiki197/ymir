@@ -9,6 +9,8 @@ pub const std_options = klog.default_log_options;
 
 extern const __stackguard_lower: [*]const u8;
 
+pub const panic = ymir.panic.panic_fn;
+
 export fn kernelEntry() callconv(.naked) noreturn {
     asm volatile (
         \\ movq %[new_stack], %%rsp

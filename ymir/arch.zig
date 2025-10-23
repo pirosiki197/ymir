@@ -4,3 +4,4 @@ pub const gdt = arch.gdt;
 pub const itr = arch.itr;
 pub const page = arch.page;
 pub const relax = arch.relax;
+pub const disableIntr = arch.disableIntr;
