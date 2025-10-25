@@ -37,19 +37,27 @@ fn kernelMain(boot_info: surtr.BootInfo) !void {
     const serial = Serial.init();
     klog.init(serial);
     log.info("Hello, world!", .{});
+
     arch.gdt.init();
     log.info("Initialized GDT.", .{});
+
     arch.itr.init();
     log.info("Initialized IDT.", .{});
+
     mem.initPageAllocator(boot_info.memory_map);
     log.info("Initialized page allocator.", .{});
-    const page_allocator = mem.page_allocator;
+
+    mem.initGeneralAllocator();
+    log.info("Initialized general allocator", .{});
+
     log.info("Reconstructing memory mapping...", .{});
     try mem.reconstructMapping(mem.page_allocator);
 
-    const array = try page_allocator.alloc(u32, 4);
-    log.info("Memory allocated @ {*}", .{array.ptr});
-    page_allocator.free(array);
+    const general_allocator = mem.general_allocator;
+    const p = try general_allocator.alloc(u8, 0x4);
+    log.debug("p @ {*}", .{p.ptr});
+    const q = try general_allocator.alloc(u8, 0x4);
+    log.debug("q @ {*}", .{q.ptr});
 
     while (true) asm volatile ("hlt");
 }

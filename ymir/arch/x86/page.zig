@@ -5,6 +5,7 @@ const ymir = @import("ymir");
 
 const BootServices = std.os.uefi.tables.BootServices;
 const Allocator = std.mem.Allocator;
+const Alignment = std.mem.Alignment;
 const Phys = surtr.Phys;
 const Virt = surtr.Virt;
 
@@ -133,7 +134,7 @@ const PageError = error{
 };
 
 fn allocatePage(allocator: Allocator) PageError![*]align(4096) u8 {
-    return (allocator.alignedAlloc(u8, @enumFromInt(12), 4096) catch return error.OutOfMemory).ptr;
+    return (allocator.alignedAlloc(u8, Alignment.fromByteUnits(4096), 4096) catch return error.OutOfMemory).ptr;
 }
 
 pub fn reconstruct(allocator: Allocator) PageError!void {

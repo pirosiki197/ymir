@@ -5,6 +5,9 @@ const Allocator = @import("std").mem.Allocator;
 const Phys = surtr.Phys;
 const Virt = surtr.Virt;
 
+const PageAllocator = @import("PageAllocator.zig");
+const BinAllocator = @import("BinAllocator.zig");
+
 var mapping_reconstructed = false;
 
 pub fn reconstructMapping(allocator: Allocator) !void {
@@ -30,8 +33,7 @@ pub fn phys2virt(addr: u64) Virt {
     }
 }
 
-pub const PageAllocator = @import("PageAllocator.zig");
-pub var page_allocator_instance: PageAllocator = undefined;
+var page_allocator_instance: PageAllocator = undefined;
 pub const page_allocator = Allocator{
     .ptr = &page_allocator_instance,
     .vtable = &PageAllocator.vtable,
@@ -39,4 +41,14 @@ pub const page_allocator = Allocator{
 
 pub fn initPageAllocator(map: surtr.MemoryMap) void {
     page_allocator_instance.init(map);
+}
+
+var bin_allocator_instance: BinAllocator = undefined;
+pub const general_allocator = Allocator{
+    .ptr = &bin_allocator_instance,
+    .vtable = &BinAllocator.vtable,
+};
+
+pub fn initGeneralAllocator() void {
+    bin_allocator_instance.init(page_allocator);
 }
