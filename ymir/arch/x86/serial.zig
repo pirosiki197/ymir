@@ -57,6 +57,12 @@ pub fn initSerial(serial: *Serial, port: Port, baud: u32) void {
     };
 }
 
+pub fn enableInterrupt(port: Port) void {
+    var ie = am.inb(@intFromEnum(port) + offsets.ier);
+    ie |= @as(u8, 0b0000_0011); // Tx-empty, Rx-available
+    am.outb(ie, @intFromEnum(port) + offsets.ier);
+}
+
 fn writeByteCom1(byte: u8) void {
     writeByte(byte, .com1);
 }

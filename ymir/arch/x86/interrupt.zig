@@ -3,7 +3,9 @@ const ymir = @import("ymir");
 const idt = @import("idt.zig");
 const isr = @import("isr.zig");
 const am = @import("asm.zig");
-const Context = isr.Context;
+pub const Context = isr.Context;
+
+pub const num_system_exceptions = 32;
 
 pub fn init() void {
     inline for (0..idt.max_num_gates) |i| {
@@ -19,6 +21,11 @@ var handlers: [256]Handler = @splat(unhandledHandler);
 pub fn dispatch(ctx: *Context) void {
     const vector = ctx.vector;
     handlers[vector](ctx);
+}
+
+pub fn registerHandler(comptime vector: u8, handler: Handler) void {
+    handlers[vector] = handler;
+    idt.setGate(vector, .Interrupt64, isr.generateIsr(vector));
 }
 
 fn unhandledHandler(ctx: *Context) void {
@@ -79,4 +86,3 @@ fn exceptionName(vector: u64) []const u8 {
         else => "Unknown or User Defined",
     };
 }
-

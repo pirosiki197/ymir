@@ -5,6 +5,7 @@ const Serial = ymir.serial.Serial;
 const klog = ymir.klog;
 const log = @import("std").log.scoped(.main);
 const mem = ymir.mem;
+const idefs = ymir.idefs;
 pub const std_options = klog.default_log_options;
 
 extern const __stackguard_lower: [*]const u8;
@@ -35,14 +36,22 @@ fn kernelMain(boot_info: surtr.BootInfo) !void {
     };
 
     const serial = Serial.init();
+    arch.serial.enableInterrupt(.com1);
     klog.init(serial);
-    log.info("Hello, world!", .{});
+    log.info("Ymir started!", .{});
 
     arch.gdt.init();
     log.info("Initialized GDT.", .{});
 
-    arch.itr.init();
+    arch.intr.init();
     log.info("Initialized IDT.", .{});
+
+    arch.pic.init();
+    arch.intr.registerHandler(idefs.pic_serial1, blobIrqHandler);
+    arch.pic.unsetMask(.serial1);
+    arch.intr.registerHandler(idefs.pic_timer, blobIrqHandler);
+    arch.pic.unsetMask(.timer);
+    log.info("Initialized PIC", .{});
 
     mem.initPageAllocator(boot_info.memory_map);
     log.info("Initialized page allocator.", .{});
@@ -66,4 +75,9 @@ fn validateBootInfo(boot_info: surtr.BootInfo) !void {
     if (boot_info.magic != surtr.magic) {
         return error.InvalidMagic;
     }
+}
+
+fn blobIrqHandler(ctx: *arch.intr.Context) void {
+    const vector: u16 = @intCast(ctx.vector - 0x20);
+    arch.pic.notifyEoi(@enumFromInt(vector));
 }

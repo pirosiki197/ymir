@@ -1,5 +1,6 @@
 const std = @import("std");
 const uefi = std.os.uefi;
+const log = std.log.scoped(.PageAllocator);
 const surtr = @import("surtr");
 const MemoryMap = surtr.MemoryMap;
 const MemoryDescriptorIterator = surtr.MemoryDescriptorIterator;
@@ -31,7 +32,7 @@ pub fn init(self: *Self, map: MemoryMap) void {
             self.markAllocated(phys2frame(avail_end), desc.number_of_pages);
         }
         const phys_end = desc.physical_start + desc.number_of_pages * page_size;
-        @import("std").log.info("type: {s}, start: {d}", .{ @tagName(desc.type), desc.physical_start });
+        log.debug("type: {s}, start: {d}", .{ @tagName(desc.type), desc.physical_start });
         if (isUsableMemory(desc)) {
             avail_end = phys_end;
             self.markNotUsed(phys2frame(desc.physical_start), desc.number_of_pages);
@@ -119,7 +120,6 @@ inline fn isUsableMemory(descriptor: *uefi.tables.MemoryDescriptor) bool {
 }
 
 fn allocate(ctx: *anyopaque, n: usize, _: Alignment, _: usize) ?[*]u8 {
-    const log = @import("std").log;
     const self: *PageAllocator = @ptrCast(@alignCast(ctx));
 
     const num_frames = (n + page_size - 1) / page_size;

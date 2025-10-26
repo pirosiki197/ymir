@@ -2,6 +2,7 @@ pub const serial = @import("serial.zig");
 pub const arch = @import("arch.zig");
 pub const bits = @import("bits.zig");
 pub const klog = @import("log.zig");
+pub const idefs = @import("interrupt.zig");
 pub const mem = @import("mem/mem.zig");
 pub const panic = @import("panic.zig");
 
