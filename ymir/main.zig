@@ -6,6 +6,7 @@ const klog = ymir.klog;
 const log = @import("std").log.scoped(.main);
 const mem = ymir.mem;
 const idefs = ymir.idefs;
+const vmx = ymir.vmx;
 pub const std_options = klog.default_log_options;
 
 extern const __stackguard_lower: [*]const u8;
@@ -67,6 +68,9 @@ fn kernelMain(boot_info: surtr.BootInfo) !void {
     log.debug("p @ {*}", .{p.ptr});
     const q = try general_allocator.alloc(u8, 0x4);
     log.debug("q @ {*}", .{q.ptr});
+
+    var vm = try vmx.Vm.new();
+    try vm.init(general_allocator);
 
     while (true) asm volatile ("hlt");
 }

@@ -1,10 +1,11 @@
 pub const serial = @import("serial.zig");
-pub const arch = @import("arch.zig");
+pub const arch = @import("arch/x86/arch.zig");
 pub const bits = @import("bits.zig");
 pub const klog = @import("log.zig");
 pub const idefs = @import("interrupt.zig");
 pub const mem = @import("mem/mem.zig");
 pub const panic = @import("panic.zig");
+pub const vmx = @import("vmx.zig");
 
 const gib = 1024 * 1024 * 1024;
 pub const direct_map_base = 0xFFFF_8880_0000_0000;

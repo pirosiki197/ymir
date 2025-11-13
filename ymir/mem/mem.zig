@@ -2,11 +2,14 @@ const surtr = @import("surtr");
 const ymir = @import("ymir");
 const arch = ymir.arch;
 const Allocator = @import("std").mem.Allocator;
-const Phys = surtr.Phys;
-const Virt = surtr.Virt;
+
+pub const Phys = surtr.Phys;
+pub const Virt = surtr.Virt;
 
 const PageAllocator = @import("PageAllocator.zig");
 const BinAllocator = @import("BinAllocator.zig");
+
+pub const page_size = 4096;
 
 var mapping_reconstructed = false;
 
@@ -15,13 +18,18 @@ pub fn reconstructMapping(allocator: Allocator) !void {
     mapping_reconstructed = true;
 }
 
-pub fn virt2phys(addr: u64) Phys {
+pub fn virt2phys(addr: anytype) Phys {
+    const value = switch (@typeInfo(@TypeOf(addr))) {
+        .int, .comptime_int => @as(u64, addr),
+        .pointer => @as(u64, @intFromPtr(addr)),
+        else => @compileError("virt2phys: invalid type"),
+    };
     if (!mapping_reconstructed) {
-        return addr;
-    } else if (addr < ymir.kernel_base) {
-        return addr - ymir.direct_map_base;
+        return value;
+    } else if (value < ymir.kernel_base) {
+        return value - ymir.direct_map_base;
     } else {
-        return addr - ymir.kernel_base;
+        return value - ymir.kernel_base;
     }
 }
 
