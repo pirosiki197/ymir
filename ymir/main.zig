@@ -71,6 +71,8 @@ fn kernelMain(boot_info: surtr.BootInfo) !void {
 
     var vm = try vmx.Vm.new();
     try vm.init(general_allocator);
+    log.info("Starting the virtual machine...", .{});
+    try vm.loop();
 
     while (true) asm volatile ("hlt");
 }

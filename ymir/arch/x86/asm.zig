@@ -47,6 +47,34 @@ pub inline fn lidt(idtr: u64) void {
     );
 }
 
+const SgdtRet = packed struct {
+    limit: u16,
+    base: u64,
+};
+
+pub inline fn sgdt() SgdtRet {
+    var gdtr: SgdtRet = undefined;
+    asm volatile (
+        \\sgdt %[ret]
+        : [ret] "=m" (gdtr),
+    );
+    return gdtr;
+}
+
+const SidtRet = packed struct {
+    limit: u16,
+    base: u64,
+};
+
+pub inline fn sidt() SidtRet {
+    var idtr: SidtRet = undefined;
+    asm volatile (
+        \\sidt %[ret]
+        : [ret] "=m" (idtr),
+    );
+    return idtr;
+}
+
 pub inline fn cli() void {
     asm volatile ("cli");
 }
@@ -112,15 +140,184 @@ pub inline fn loadCr4(cr4: u64) void {
     );
 }
 
+const Segment = enum {
+    cs,
+    ss,
+    ds,
+    es,
+    fs,
+    gs,
+    tr,
+    ldtr,
+};
+
+pub fn readSegSelector(segment: Segment) u16 {
+    return switch (segment) {
+        .cs => asm volatile ("mov %%cs, %[ret]"
+            : [ret] "=r" (-> u16),
+        ),
+        .ss => asm volatile ("mov %%ss, %[ret]"
+            : [ret] "=r" (-> u16),
+        ),
+        .ds => asm volatile ("mov %%ds, %[ret]"
+            : [ret] "=r" (-> u16),
+        ),
+        .es => asm volatile ("mov %%es, %[ret]"
+            : [ret] "=r" (-> u16),
+        ),
+        .fs => asm volatile ("mov %%fs, %[ret]"
+            : [ret] "=r" (-> u16),
+        ),
+        .gs => asm volatile ("mov %%gs, %[ret]"
+            : [ret] "=r" (-> u16),
+        ),
+        .tr => asm volatile ("str %[ret]"
+            : [ret] "=r" (-> u16),
+        ),
+        .ldtr => asm volatile ("sldt %[ret]"
+            : [ret] "=r" (-> u16),
+        ),
+    };
+}
+
 pub const Msr = enum(u32) {
+    /// IA32_APIC_BASE MSR.
+    apic_base = 0x001B,
+    /// IA32_FEATURE_CONTROL MSR.
     feature_control = 0x003A,
-
+    /// IA32_TSC MSR.
+    tsc_adjust = 0x003B,
+    /// IA32_SPEC_CTRL MSR.
+    spec_ctrl = 0x0048,
+    /// IA32_BIOS_SIGN_ID MSR. SDM Vol.3A Table 2-3.
+    bios_sign_id = 0x8B,
+    /// IA32_MTRRCAP MSR.
+    mtrrcap = 0xFE,
+    /// IA32_ARCH_CAPABILITIES MSR. SDM Vol.3A Table 2-2.
+    arch_cap = 0x10A,
+    /// IA32_SYSENTER_CS MSR. SDM Vol.3A Table 2-3.
+    sysenter_cs = 0x174,
+    /// IA32_SYSENTER_ESP MSR. SDM Vol.3A Table 2-3.
+    sysenter_esp = 0x175,
+    /// IA32_SYSENTER_EIP MSR. SDM Vol.3A Table 2-3.
+    sysenter_eip = 0x176,
+    /// IA32_MCG_CAP MSR.
+    mcg_cap = 0x179,
+    /// IA32_MISC_ENABLE MSR.
+    misc_enable = 0x1A0,
+    /// IA32_DEBUGCTL MSR. SDM Vol.4 Table 2-3.
+    debugctl = 0x01D9,
+    /// IA32_MTRR_PHYSBASE0 MSR.
+    mtrr_physbase0 = 0x200,
+    /// IA32_MTRR_PHYSMASK0 MSR.
+    mtrr_physmask0 = 0x201,
+    /// IA32_MTRR_PHYSBASE1 MSR.
+    mtrr_physbase1 = 0x202,
+    /// IA32_MTRR_PHYSMASK1 MSR.
+    mtrr_physmask1 = 0x203,
+    /// IA32_MTRR_PHYSBASE2 MSR.
+    mtrr_physbase2 = 0x204,
+    /// IA32_MTRR_PHYSMASK2 MSR.
+    mtrr_physmask2 = 0x205,
+    /// IA32_MTRR_PHYSBASE3 MSR.
+    mtrr_physbase3 = 0x206,
+    /// IA32_MTRR_PHYSMASK3 MSR.
+    mtrr_physmask3 = 0x207,
+    /// IA32_MTRR_PHYSBASE4 MSR.
+    mtrr_physbase4 = 0x208,
+    /// IA32_MTRR_PHYSMASK4 MSR.
+    mtrr_physmask4 = 0x209,
+    /// IA32_MTRR_PHYSBASE5 MSR.
+    mtrr_physbase5 = 0x20A,
+    /// IA32_MTRR_PHYSMASK5 MSR.
+    mtrr_physmask5 = 0x20B,
+    /// IA32_MTRR_PHYSBASE6 MSR.
+    mtrr_physbase6 = 0x20C,
+    /// IA32_MTRR_PHYSMASK6 MSR.
+    mtrr_physmask6 = 0x20D,
+    /// IA32_MTRR_PHYSBASE7 MSR.
+    mtrr_physbase7 = 0x20E,
+    /// IA32_MTRR_PHYSMASK7 MSR.
+    mtrr_physmask7 = 0x20F,
+    /// IA32_MTRR_FIX64K_00000 MSR.
+    mtrr_fix64K_00000 = 0x250,
+    /// IA32_MTRR_FIX16K_80000 MSR.
+    mtrr_fix16K_80000 = 0x258,
+    /// IA32_MTRR_FIX16K_A0000 MSR.
+    mtrr_fix16K_A0000 = 0x259,
+    /// IA32_MTRR_FIX4K_C0000 MSR.
+    mtrr_fix4K_C0000 = 0x268,
+    /// IA32_MTRR_FIX4K_C8000 MSR.
+    mtrr_fix4K_C8000 = 0x269,
+    /// IA32_MTRR_FIX4K_D0000 MSR.
+    mtrr_fix4K_D0000 = 0x26A,
+    /// IA32_MTRR_FIX4K_D8000 MSR.
+    mtrr_fix4K_D8000 = 0x26B,
+    /// IA32_MTRR_FIX4K_E0000 MSR.
+    mtrr_fix4K_E0000 = 0x26C,
+    /// IA32_MTRR_FIX4K_E8000 MSR.
+    mtrr_fix4K_E8000 = 0x26D,
+    /// IA32_MTRR_FIX4K_F0000 MSR.
+    mtrr_fix4K_F0000 = 0x26E,
+    /// IA32_MTRR_FIX4K_F8000 MSR.
+    mtrr_fix4K_F8000 = 0x26F,
+    /// IA32_PAT MSR.
+    pat = 0x277,
+    /// IA32_MTRR_DEF_TYPE MSR.
+    mtrr_def_type = 0x2FF,
+    /// IA32_VMX_BASIC MSR.
     vmx_basic = 0x0480,
+    /// IA32_VMX_PINBASED_CTLS MSR.
+    vmx_pinbased_ctls = 0x0481,
+    /// IA32_VMX_PROCBASED_CTLS MSR.
+    vmx_procbased_ctls = 0x0482,
+    /// IA32_VMX_EXIT_CTLS MSR.
+    vmx_exit_ctls = 0x0483,
+    /// IA32_VMX_ENTRY_CTLS MSR.
+    vmx_entry_ctls = 0x0484,
+    /// IA32_VMX_MISC MSR.
+    vmx_misc = 0x0485,
+    /// IA32_VMX_CR0_FIXED0 MSR.
+    vmx_cr0_fixed0 = 0x0486,
+    /// IA32_VMX_CR0_FIXED1 MSR.
+    vmx_cr0_fixed1 = 0x0487,
+    /// IA32_VMX_CR4_FIXED0 MSR.
+    vmx_cr4_fixed0 = 0x0488,
+    /// IA32_VMX_CR4_FIXED1 MSR.
+    vmx_cr4_fixed1 = 0x0489,
+    /// IA32_VMX_PROCBASED_CTLS2 MSR.
+    vmx_procbased_ctls2 = 0x048B,
+    /// IA32_VMX_EPT_VPID_CAP MSR.
+    vmx_ept_vpid_cap = 0x048C,
+    /// IA32_VMX_TRUE_PINBASED_CTLS MSR.
+    vmx_true_pinbased_ctls = 0x048D,
+    /// IA32_VMX_TRUE_PROCBASED_CTLS MSR.
+    vmx_true_procbased_ctls = 0x048E,
+    /// IA32_VMX_TRUE_EXIT_CTLS MSR.
+    vmx_true_exit_ctls = 0x048F,
+    /// IA32_VMX_TRUE_ENTRY_CTLS MSR.
+    vmx_true_entry_ctls = 0x0490,
+    /// IA32_XSS MSR.
+    xss = 0x0DA0,
 
-    vmx_cr0_fixed0 = 0x486,
-    vmx_cr0_fixed1 = 0x487,
-    vmx_cr4_fixed0 = 0x488,
-    vmx_cr4_fixed1 = 0x489,
+    /// IA32_STAR MSR.
+    star = 0xC0000081,
+    /// IA32_LSTAR MSR.
+    lstar = 0xC0000082,
+    /// IA32_CSTAR MSR.
+    cstar = 0xC0000083,
+    /// IA32_FMASK MSR.
+    fmask = 0xC0000084,
+    /// IA32_FS_BASE MSR.
+    fs_base = 0xC0000100,
+    /// IA32_GS_BASE MSR.
+    gs_base = 0xC0000101,
+    /// IA32_KERNEL_GS_BASE MSR.
+    kernel_gs_base = 0xC0000102,
+    /// IA32_TSC_AUX MSR.
+    tsc_aux = 0xC0000103,
+    /// IA32_EFER MSR.
+    efer = 0xC0000080,
 
     _,
 };
@@ -198,3 +395,27 @@ pub const FlagsRegister = packed struct(u64) {
         return res;
     }
 };
+
+pub inline fn vmclear(vmcs_region: mem.Phys) VmxError!void {
+    var rflags: u64 = undefined;
+    asm volatile (
+        \\vmclear (%[vmcs_phys])
+        \\pushf
+        \\popq %[rflags]
+        : [rflags] "=r" (rflags),
+        : [vmcs_phys] "r" (&vmcs_region),
+        : .{ .cc = true, .memory = true });
+    try vmxerr(rflags);
+}
+
+pub inline fn vmptrld(vmcs_region: mem.Phys) VmxError!void {
+    var rflags: u64 = undefined;
+    asm volatile (
+        \\vmptrld (%[vmcs_phys])
+        \\pushf
+        \\popq %[rflags]
+        : [rflags] "=r" (rflags),
+        : [vmcs_phys] "r" (&vmcs_region),
+        : .{ .cc = true, .memory = true });
+    try vmxerr(rflags);
+}

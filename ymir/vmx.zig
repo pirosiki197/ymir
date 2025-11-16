@@ -39,5 +39,12 @@ pub const Vm = struct {
     pub fn init(self: *Self, allocator: Allocator) Error!void {
         try self.vcpu.virtualize(allocator);
         log.info("vCPU #{X} was created.", .{self.vcpu.id});
+
+        try self.vcpu.setupVmcs(allocator);
+    }
+
+    pub fn loop(self: *Self) Error!void {
+        arch.disableIntr();
+        try self.vcpu.loop();
     }
 };
