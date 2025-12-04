@@ -105,3 +105,30 @@ pub const SegmentRights = packed struct(u32) {
     unusable: bool = false,
     _reserved2: u15 = 0,
 };
+
+pub const GuestRegisters = extern struct {
+    rax: u64,
+    rcx: u64,
+    rdx: u64,
+    rbx: u64,
+    rbp: u64,
+    rsi: u64,
+    rdi: u64,
+    r8: u64,
+    r9: u64,
+    r10: u64,
+    r11: u64,
+    r12: u64,
+    r13: u64,
+    r14: u64,
+    r15: u64,
+    // Align to 16 bytes, otherwise movaps would cause #GP.
+    xmm0: u128 align(16),
+    xmm1: u128 align(16),
+    xmm2: u128 align(16),
+    xmm3: u128 align(16),
+    xmm4: u128 align(16),
+    xmm5: u128 align(16),
+    xmm6: u128 align(16),
+    xmm7: u128 align(16),
+};

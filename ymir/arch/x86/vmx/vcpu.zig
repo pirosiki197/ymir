@@ -7,6 +7,7 @@ const mem = ymir.mem;
 const am = @import("../asm.zig");
 const vmx = @import("common.zig");
 const vmcs = @import("vmcs.zig");
+const vmam = @import("asm.zig");
 
 const VmxError = vmx.VmxError;
 
@@ -17,10 +18,8 @@ export fn blobGuest() callconv(.naked) noreturn {
 const temp_stack_size: usize = mem.page_size;
 var temp_stack: [temp_stack_size + 0x10]u8 align(0x10) = @splat(0);
 
-fn vmexitBootstrapHandler() callconv(.naked) noreturn {
-    asm volatile (
-        \\call vmexitHandler
-    );
+export fn setHostStack(rsp: u64) callconv(.c) void {
+    vmx.vmwrite(vmcs.host.rsp, rsp) catch {};
 }
 
 export fn vmexitHandler() noreturn {
@@ -37,6 +36,8 @@ pub const Vcpu = struct {
     vpid: u16,
     vmxon_region: *VmxonRegion = undefined,
     vmcs_region: *VmcsRegion = undefined,
+    guest_regs: vmx.GuestRegisters = undefined,
+    launch_done: bool = false,
 
     pub fn new(vpid: u16) Self {
         return .{ .vpid = vpid };
@@ -66,17 +67,99 @@ pub const Vcpu = struct {
         try setupGuestState(self);
     }
 
-    pub fn loop(_: *Self) VmxError!void {
-        const rflags = asm volatile (
-            \\vmlaunch
-            \\pushf
-            \\popq %[rflags]
-            : [rflags] "=r" (-> u64),
+    pub fn loop(self: *Self) VmxError!void {
+        while (true) {
+            self.vmentry() catch |err| {
+                log.err("VM-entry failed: {}", .{err});
+                if (err == VmxError.VmxStatusAvailable) {
+                    const inst_err = try vmx.InstructionError.load();
+                    log.err("VM Instruction error: {}", .{inst_err});
+                }
+                self.abort();
+            };
+            try self.handleExit(try vmcs.ExitInfo.load());
+        }
+    }
+
+    fn vmentry(self: *Self) VmxError!void {
+        const success = asm volatile (
+            \\mov %[self], %%rdi
+            \\call asmVmEntry
+            : [ret] "={ax}" (-> u8),
+            : [self] "r" (self),
+            : .{ .rax = true, .rcx = true, .rdx = true, .rsi = true, .rdi = true, .r8 = true, .r9 = true, .r10 = true, .r11 = true }) == 0;
+
+        if (!self.launch_done and success) {
+            self.launch_done = true;
+        }
+
+        if (!success) {
+            const inst_err = try vmx.vmread(vmcs.ro.vminstruction_error);
+            return if (inst_err != 0) VmxError.VmxStatusUnavailable else VmxError.VmxStatusAvailable;
+        }
+    }
+
+    fn handleExit(self: *Self, exit_info: vmcs.ExitInfo) VmxError!void {
+        switch (exit_info.basic_reason) {
+            .hlt => {
+                try self.stepNextInst();
+                log.debug("HLT", .{});
+            },
+            else => {
+                log.err("Unhandled VM-exit: reason={}", .{exit_info.basic_reason});
+                self.abort();
+            },
+        }
+    }
+
+    fn stepNextInst(_: *Self) VmxError!void {
+        const rip = try vmx.vmread(vmcs.guest.rip);
+        try vmx.vmwrite(vmcs.guest.rip, rip + try vmx.vmread(vmcs.ro.exit_inst_len));
+    }
+
+    fn abort(self: *Self) noreturn {
+        @branchHint(.cold);
+        self.dump() catch log.err("Failed to dump VM information", .{});
+        ymir.endlessHalt();
+    }
+
+    fn dump(self: *Self) VmxError!void {
+        try self.printGuestState();
+    }
+
+    fn printGuestState(self: *Self) VmxError!void {
+        const vmread = vmx.vmread;
+        log.err("=== vCPU Information ===", .{});
+        log.err("[Guest State]", .{});
+        log.err("RIP: 0x{X:0>16}", .{try vmread(vmcs.guest.rip)});
+        log.err("RSP: 0x{X:0>16}", .{try vmread(vmcs.guest.rsp)});
+        log.err("RAX: 0x{X:0>16}", .{self.guest_regs.rax});
+        log.err("RBX: 0x{X:0>16}", .{self.guest_regs.rbx});
+        log.err("RCX: 0x{X:0>16}", .{self.guest_regs.rcx});
+        log.err("RDX: 0x{X:0>16}", .{self.guest_regs.rdx});
+        log.err("RSI: 0x{X:0>16}", .{self.guest_regs.rsi});
+        log.err("RDI: 0x{X:0>16}", .{self.guest_regs.rdi});
+        log.err("RBP: 0x{X:0>16}", .{self.guest_regs.rbp});
+        log.err("R8 : 0x{X:0>16}", .{self.guest_regs.r8});
+        log.err("R9 : 0x{X:0>16}", .{self.guest_regs.r9});
+        log.err("R10: 0x{X:0>16}", .{self.guest_regs.r10});
+        log.err("R11: 0x{X:0>16}", .{self.guest_regs.r11});
+        log.err("R12: 0x{X:0>16}", .{self.guest_regs.r12});
+        log.err("R13: 0x{X:0>16}", .{self.guest_regs.r13});
+        log.err("R14: 0x{X:0>16}", .{self.guest_regs.r14});
+        log.err("R15: 0x{X:0>16}", .{self.guest_regs.r15});
+        log.err("CR0: 0x{X:0>16}", .{try vmread(vmcs.guest.cr0)});
+        log.err("CR3: 0x{X:0>16}", .{try vmread(vmcs.guest.cr3)});
+        log.err("CR4: 0x{X:0>16}", .{try vmread(vmcs.guest.cr4)});
+        log.err("EFER:0x{X:0>16}", .{try vmread(vmcs.guest.efer)});
+        log.err(
+            "CS : 0x{X:0>4} 0x{X:0>16} 0x{X:0>8}",
+            .{
+                try vmread(vmcs.guest.cs_sel),
+                try vmread(vmcs.guest.cs_base),
+                try vmread(vmcs.guest.cs_limit),
+            },
         );
-        vmx.vmxtry(rflags) catch |err| {
-            log.err("VMLAUNCH: {}", .{err});
-            log.err("VM-instruction error number: {s}", .{@tagName(try vmx.InstructionError.load())});
-        };
     }
 };
 
@@ -106,7 +189,7 @@ fn setupExecCtrls(_: *Vcpu, _: Allocator) VmxError!void {
     ).load();
 
     var ppb_exec_ctrl = try vmcs.PrimaryProcExecCtrl.store();
-    ppb_exec_ctrl.hlt = false;
+    ppb_exec_ctrl.hlt = true;
     ppb_exec_ctrl.activate_secondary_controls = false;
     try adjustRegMandatoryBits(
         ppb_exec_ctrl,
@@ -141,7 +224,7 @@ fn setupHostState(_: *Vcpu) VmxError!void {
     try vmwrite(vmcs.host.cr3, am.readCr3());
     try vmwrite(vmcs.host.cr4, am.readCr4());
 
-    try vmwrite(vmcs.host.rip, &vmexitBootstrapHandler);
+    try vmwrite(vmcs.host.rip, &vmam.asmVmExit);
     try vmwrite(vmcs.host.rsp, @intFromPtr(&temp_stack) + temp_stack_size);
 
     try vmwrite(vmcs.host.cs_sel, am.readSegSelector(.cs));

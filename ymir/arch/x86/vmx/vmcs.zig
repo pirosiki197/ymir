@@ -37,6 +37,7 @@ pub const PrimaryProcExecCtrl = packed struct(u32) {
     interrupt_window: bool,
     tsc_offsetting: bool,
     _reserved2: u3,
+    /// HLT Exiting
     hlt: bool,
     _reserved3: u1,
     invlpg: bool,
