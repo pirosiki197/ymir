@@ -6,6 +6,7 @@ pub const Virt = u64;
 
 pub const page_size = 4096;
 pub const page_mask: u64 = 0xFFF;
+pub const page_shift_4k = 12;
 
 pub const magic: usize = 0xDEADBEEF_CAFEBABE;
 

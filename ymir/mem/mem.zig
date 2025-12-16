@@ -6,10 +6,11 @@ const Allocator = @import("std").mem.Allocator;
 pub const Phys = surtr.Phys;
 pub const Virt = surtr.Virt;
 
-const PageAllocator = @import("PageAllocator.zig");
-const BinAllocator = @import("BinAllocator.zig");
+pub const PageAllocator = @import("PageAllocator.zig");
+pub const BinAllocator = @import("BinAllocator.zig");
 
 pub const page_size = 4096;
+pub const page_size_2mb = 2 * 1024 * 1024;
 
 var mapping_reconstructed = false;
 
@@ -41,7 +42,7 @@ pub fn phys2virt(addr: u64) Virt {
     }
 }
 
-var page_allocator_instance: PageAllocator = undefined;
+pub var page_allocator_instance: PageAllocator = undefined;
 pub const page_allocator = Allocator{
     .ptr = &page_allocator_instance,
     .vtable = &PageAllocator.vtable,

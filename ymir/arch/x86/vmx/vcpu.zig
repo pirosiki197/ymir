@@ -8,6 +8,9 @@ const am = @import("../asm.zig");
 const vmx = @import("common.zig");
 const vmcs = @import("vmcs.zig");
 const vmam = @import("asm.zig");
+const ept = @import("ept.zig");
+
+const Phys = @import("surtr").Phys;
 
 const VmxError = vmx.VmxError;
 
@@ -34,6 +37,8 @@ pub const Vcpu = struct {
 
     id: usize = 0,
     vpid: u16,
+    eptp: ept.Eptp = undefined,
+    guest_base: Phys = undefined,
     vmxon_region: *VmxonRegion = undefined,
     vmcs_region: *VmcsRegion = undefined,
     guest_regs: vmx.GuestRegisters = undefined,
@@ -67,7 +72,18 @@ pub const Vcpu = struct {
         try setupGuestState(self);
     }
 
+    pub fn setEptp(self: *Self, eptp: ept.Eptp, host_start: [*]u8) VmxError!void {
+        self.eptp = eptp;
+        self.guest_base = ymir.mem.virt2phys(host_start);
+        try vmx.vmwrite(vmcs.ctrl.eptp, eptp);
+    }
+
     pub fn loop(self: *Self) VmxError!void {
+        const func: [*]const u8 = @ptrCast(&blobGuest);
+        const guest_map: [*]u8 = @ptrFromInt(mem.phys2virt(self.guest_base));
+        @memcpy(guest_map[0..0x20], func[0..0x20]);
+        try vmx.vmwrite(vmcs.guest.rip, 0);
+
         while (true) {
             self.vmentry() catch |err| {
                 log.err("VM-entry failed: {}", .{err});
@@ -190,10 +206,18 @@ fn setupExecCtrls(_: *Vcpu, _: Allocator) VmxError!void {
 
     var ppb_exec_ctrl = try vmcs.PrimaryProcExecCtrl.store();
     ppb_exec_ctrl.hlt = true;
-    ppb_exec_ctrl.activate_secondary_controls = false;
+    ppb_exec_ctrl.activate_secondary_controls = true;
     try adjustRegMandatoryBits(
         ppb_exec_ctrl,
         if (basic_msr.true_control) am.readMsr(.vmx_true_procbased_ctls) else am.readMsr(.vmx_procbased_ctls),
+    ).load();
+
+    var ppb_exec_ctrl2 = try vmcs.SecondaryProcExecCtrl.store();
+    ppb_exec_ctrl2.ept = true;
+    ppb_exec_ctrl2.unrestricted_guest = true;
+    try adjustRegMandatoryBits(
+        ppb_exec_ctrl2,
+        am.readMsr(.vmx_procbased_ctls2),
     ).load();
 }
 fn setupExitCtrls(_: *Vcpu) VmxError!void {
@@ -211,7 +235,7 @@ fn setupEntryCtrls(_: *Vcpu) VmxError!void {
     const basic_msr = am.readMsrVmxBasic();
 
     var entry_ctrl = try vmcs.EntryCtrl.store();
-    entry_ctrl.ia32e_mode_guest = true;
+    entry_ctrl.ia32e_mode_guest = false;
     try adjustRegMandatoryBits(
         entry_ctrl,
         if (basic_msr.true_control) am.readMsr(.vmx_true_entry_ctls) else am.readMsr(.vmx_entry_ctls),
@@ -246,7 +270,11 @@ fn setupHostState(_: *Vcpu) VmxError!void {
 fn setupGuestState(_: *Vcpu) VmxError!void {
     const vmwrite = vmx.vmwrite;
 
-    try vmwrite(vmcs.guest.cr0, am.readCr0());
+    var cr0 = std.mem.zeroes(am.Cr0);
+    cr0.pe = true;
+    cr0.ne = true;
+    cr0.pg = false;
+    try vmwrite(vmcs.guest.cr0, cr0);
     try vmwrite(vmcs.guest.cr3, am.readCr3());
     try vmwrite(vmcs.guest.cr4, am.readCr4());
 

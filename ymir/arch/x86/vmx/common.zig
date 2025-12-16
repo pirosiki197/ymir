@@ -1,11 +1,26 @@
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+
+const mem = @import("ymir").mem;
 const am = @import("../asm.zig");
 const vmcs = @import("vmcs.zig");
+const ept = @import("ept.zig");
 
 pub const VmxError = error{
     VmxStatusUnavailable,
     VmxStatusAvailable,
     OutOfMemory,
+    AlreadyMapped,
 };
+
+pub fn mapGuest(host_pages: []u8, allocator: Allocator) VmxError!ept.Eptp {
+    return ept.initEpt(
+        0,
+        mem.virt2phys(host_pages.ptr),
+        host_pages.len,
+        allocator,
+    );
+}
 
 pub fn vmxtry(rflags: u64) VmxError!void {
     const flags: am.FlagsRegister = @bitCast(rflags);

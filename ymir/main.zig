@@ -71,6 +71,8 @@ fn kernelMain(boot_info: surtr.BootInfo) !void {
 
     var vm = try vmx.Vm.new();
     try vm.init(general_allocator);
+    try vm.setupGuestMemory(general_allocator, &mem.page_allocator_instance);
+    log.info("Setup guest memory", .{});
     log.info("Starting the virtual machine...", .{});
     try vm.loop();
 

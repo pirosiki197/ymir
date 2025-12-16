@@ -145,6 +145,52 @@ pub const PrimaryExitCtrl = packed struct(u32) {
     }
 };
 
+pub const SecondaryProcExecCtrl = packed struct(u32) {
+    const Self = @This();
+
+    virtualize_apic_accesses: bool,
+    ept: bool,
+    descriptor_table: bool,
+    rdtscp: bool,
+    virtualize_x2apic_mode: bool,
+    vpid: bool,
+    wbinvd: bool,
+    unrestricted_guest: bool,
+    apic_register_virtualization: bool,
+    virtual_interrupt_delivery: bool,
+    pause_loop: bool,
+    rdrand: bool,
+    enable_invpcid: bool,
+    enable_vmfunc: bool,
+    vmcs_shadowing: bool,
+    enable_encls: bool,
+    rdseed: bool,
+    enable_pml: bool,
+    ept_violation: bool,
+    conceal_vmx_from_pt: bool,
+    enable_xsaves_xrstors: bool,
+    pasid_translation: bool,
+    mode_based_control_ept: bool,
+    subpage_write_eptr: bool,
+    pt_guest_pa: bool,
+    tsc_scaling: bool,
+    enable_user_wait_pause: bool,
+    enable_pconfig: bool,
+    enable_enclv: bool,
+    _reserved1: u1,
+    vmm_buslock_detect: bool,
+    instruction_timeout: bool,
+
+    pub fn load(self: Self) VmxError!void {
+        const val: u32 = @bitCast(self);
+        try vmx.vmwrite(ctrl.secondary_proc_exec_ctrl, val);
+    }
+    pub fn store() VmxError!Self {
+        const val: u32 = @truncate(try vmx.vmread(ctrl.secondary_proc_exec_ctrl));
+        return @bitCast(val);
+    }
+};
+
 pub const ExitInfo = packed struct(u32) {
     basic_reason: ExitReason,
     _zero: u1 = 0,
