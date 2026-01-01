@@ -117,9 +117,58 @@ pub const Cr0 = packed struct(u64) {
 };
 
 pub const Cr4 = packed struct(u64) {
-    _other_fields1: u13,
+    /// Virtual-8086 mode extensions.
+    vme: bool,
+    /// Protected mode virtual interrupts.
+    pvi: bool,
+    /// Time stamp disable.
+    tsd: bool,
+    /// Debugging extensions.
+    de: bool,
+    /// Page size extension.
+    pse: bool,
+    /// Physical address extension. If unset, 32-bit paging.
+    pae: bool,
+    /// Machine check exception.
+    mce: bool,
+    /// Page global enable.
+    pge: bool,
+    /// Performance monitoring counter enable.
+    pce: bool,
+    /// Operating system support for FXSAVE and FXRSTOR instructions.
+    osfxsr: bool,
+    /// Operating system support for unmasked SIMD floating-point exceptions.
+    osxmmexcpt: bool,
+    /// Virtual machine extensions.
+    umip: bool,
+    /// 57-bit linear addresses. If set, CPU uses 5-level paging.
+    la57: bool = false,
+    /// Virtual machine extensions enable.
     vmxe: bool,
-    _other_fields2: u50,
+    /// Safer mode extensions enable.
+    smxe: bool,
+    /// Reserved.
+    _reserved2: u1 = 0,
+    /// Enables the instructions RDFSBASE, RDGSBASE, WRFSBASE, and WRGSBASE.
+    fsgsbase: bool,
+    /// PCID enable.
+    pcide: bool,
+    /// XSAVE and processor extended states enable.
+    osxsave: bool,
+    /// Reserved.
+    _reserved3: u1 = 0,
+    /// Supervisor mode execution protection enable.
+    smep: bool,
+    /// Supervisor mode access protection enable.
+    smap: bool,
+    /// Protection key enable.
+    pke: bool,
+    /// Control-flow Enforcement Technology enable.
+    cet: bool,
+    /// Protection keys for supervisor-mode pages enable.
+    pks: bool,
+    /// Reserved.
+    _reserved4: u39 = 0,
 };
 
 pub inline fn readCr0() u64 {

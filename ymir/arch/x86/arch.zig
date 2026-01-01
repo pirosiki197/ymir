@@ -1,4 +1,4 @@
-const cpuid = @import("cpuid.zig");
+pub const cpuid = @import("cpuid.zig");
 pub const serial = @import("serial.zig");
 const am = @import("asm.zig");
 pub const gdt = @import("gdt.zig");

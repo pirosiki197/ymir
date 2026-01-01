@@ -34,11 +34,16 @@ pub fn virt2phys(addr: anytype) Phys {
     }
 }
 
-pub fn phys2virt(addr: u64) Virt {
+pub fn phys2virt(addr: anytype) Virt {
+    const value = switch (@typeInfo(@TypeOf(addr))) {
+        .int, .comptime_int => @as(u64, addr),
+        .pointer => @as(u64, @intFromPtr(addr)),
+        else => @compileError("virt2phys: invalid type"),
+    };
     if (!mapping_reconstructed) {
-        return addr;
+        return value;
     } else {
-        return addr + ymir.direct_map_base;
+        return value + ymir.direct_map_base;
     }
 }
 

@@ -7,6 +7,9 @@ const defs = @import("surtr");
 const blog = @import("log.zig");
 const page = @import("arch/x86/page.zig");
 
+const File = uefi.protocol.File;
+const FileInfo = File.Info.File;
+
 pub const std_options = blog.default_log_option;
 const BootServices = uefi.tables.BootServices;
 const MemoryDescriptor = uefi.tables.MemoryDescriptor;
@@ -165,6 +168,19 @@ pub fn main() uefi.Error!void {
         );
     }
 
+    const guest = try openFile(root_dir, "bzImage");
+
+    const guest_info_buffer_size: usize = @sizeOf(FileInfo) + 0x100;
+    var guest_info_buffer: [guest_info_buffer_size]u8 align(@alignOf(FileInfo)) = undefined;
+    const guest_info = try guest.getInfo(.file, &guest_info_buffer);
+
+    const guest_size_pages = (guest_info.file_size + (page_size - 1)) / page_size;
+    const guest_memory_pages = try boot_service.allocatePages(.any, .loader_data, guest_size_pages);
+
+    const guest_size = try guest.read(std.mem.sliceAsBytes(guest_memory_pages));
+    const guest_start = @intFromPtr(guest_memory_pages.ptr);
+    log.info("Loaded guest kernel image @ 0x{X:0>16} ~ 0x{X:0>16}", .{ guest_start, guest_start + guest_size });
+
     // clean up
     boot_service.freePool(header_buffer.ptr) catch |err| {
         log.err("Failed to free memory for kernel ELF header: {}", .{err});
@@ -200,6 +216,10 @@ pub fn main() uefi.Error!void {
             .descriptor_version = memory_maps.info.descriptor_version,
             .descriptors = @ptrCast(&map_buffer),
         },
+        .guest_info = .{
+            .guest_image = @ptrFromInt(guest_start),
+            .guest_size = guest_size,
+        },
     };
 
     const KernelEntryType = fn (defs.BootInfo) callconv(.{ .x86_64_win = .{} }) noreturn;
@@ -209,7 +229,7 @@ pub fn main() uefi.Error!void {
     unreachable;
 }
 
-fn openFile(root: *const uefi.protocol.File, comptime name: [:0]const u8) uefi.protocol.File.OpenError!*uefi.protocol.File {
+fn openFile(root: *const uefi.protocol.File, comptime name: [:0]const u8) File.OpenError!*uefi.protocol.File {
     return try root.open(&toUcs2(name), .read, .{});
 }
 

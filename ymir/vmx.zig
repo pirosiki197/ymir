@@ -5,8 +5,10 @@ const Allocator = std.mem.Allocator;
 const ymir = @import("ymir");
 const mem = ymir.mem;
 const arch = ymir.arch;
+const linux = @import("linux.zig");
 const impl = @import("arch/x86/vmx.zig");
 const PageAllocator = ymir.mem.PageAllocator;
+const BootParams = linux.BootParams;
 
 const guest_memory_size = 100 * 1024 * 1024; // 100MiB
 
@@ -49,6 +51,7 @@ pub const Vm = struct {
 
     pub fn setupGuestMemory(
         self: *Self,
+        guest_image: []u8,
         allocator: Allocator,
         page_allocator: *PageAllocator,
     ) Error!void {
@@ -57,7 +60,7 @@ pub const Vm = struct {
             mem.page_size_2mb,
         ) orelse return Error.OutOfMemory;
 
-        log.info("guest_mem.len={}", .{self.guest_mem.len});
+        try self.loadKernel(guest_image);
 
         const eptp = try impl.mapGuest(self.guest_mem, allocator);
         try self.vcpu.setEptp(eptp, self.guest_mem.ptr);
@@ -67,5 +70,53 @@ pub const Vm = struct {
     pub fn loop(self: *Self) Error!void {
         arch.disableIntr();
         try self.vcpu.loop();
+    }
+
+    fn loadKernel(self: *Self, kernel: []u8) Error!void {
+        const guest_mem = self.guest_mem;
+
+        var bp = BootParams.from(kernel);
+        bp.e820_entries = 0;
+
+        // Setup necessary fields
+        bp.hdr.type_of_loader = 0xFF;
+        bp.hdr.ext_loader_ver = 0;
+        bp.hdr.loadflags.loaded_high = true; // load kernel at 0x10_0000
+        bp.hdr.loadflags.can_use_heap = true; // use memory 0..BOOTPARAM as heap
+        bp.hdr.heap_end_ptr = linux.layout.bootparam - 0x200;
+        bp.hdr.loadflags.keep_segments = true; // we set CS/DS/SS/ES to flag segments with a base of 0.
+        bp.hdr.cmd_line_ptr = linux.layout.cmdline;
+        bp.hdr.vid_mode = 0xFFFF; // VGA (normal)
+
+        // Setup E820 map
+        bp.addE820entry(0, linux.layout.kernel_base, .ram);
+        bp.addE820entry(
+            linux.layout.kernel_base,
+            guest_mem.len - linux.layout.kernel_base,
+            .ram,
+        );
+
+        const cmdline_max_size = if (bp.hdr.cmdline_size < 256) bp.hdr.cmdline_size else 256;
+        const cmdline = guest_mem[linux.layout.cmdline .. linux.layout.cmdline + cmdline_max_size];
+        const cmdline_val = "console=ttyS0 earlyprintk=serial nokaslr";
+        @memset(cmdline, 0);
+        @memcpy(cmdline[0..cmdline_val.len], cmdline_val);
+
+        try loadImage(guest_mem, std.mem.asBytes(&bp), linux.layout.bootparam);
+
+        const code_offset = bp.hdr.getProtectedCodeOffset();
+        const code_size = kernel.len - code_offset;
+        try loadImage(
+            guest_mem,
+            kernel[code_offset .. code_offset + code_size],
+            linux.layout.kernel_base,
+        );
+    }
+
+    fn loadImage(memory: []u8, image: []u8, addr: usize) !void {
+        if (memory.len < addr + image.len) {
+            return Error.OutOfMemory;
+        }
+        @memcpy(memory[addr .. addr + image.len], image);
     }
 };

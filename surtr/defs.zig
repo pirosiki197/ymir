@@ -13,6 +13,7 @@ pub const magic: usize = 0xDEADBEEF_CAFEBABE;
 pub const BootInfo = extern struct {
     magic: usize = magic,
     memory_map: MemoryMap,
+    guest_info: GuestInfo,
 };
 
 pub const MemoryMap = extern struct {
@@ -21,6 +22,12 @@ pub const MemoryMap = extern struct {
     map_key: usize,
     descriptor_size: usize,
     descriptor_version: u32,
+};
+
+pub const GuestInfo = extern struct {
+    /// physical address of guest image
+    guest_image: [*]u8,
+    guest_size: usize,
 };
 
 pub const MemoryDescriptorIterator = struct {

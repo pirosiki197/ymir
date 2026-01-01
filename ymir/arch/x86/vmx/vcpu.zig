@@ -4,7 +4,10 @@ const Allocator = std.mem.Allocator;
 
 const ymir = @import("ymir");
 const mem = ymir.mem;
+const linux = ymir.linux;
 const am = @import("../asm.zig");
+const cpuid = @import("cpuid.zig");
+const msr = @import("msr.zig");
 const vmx = @import("common.zig");
 const vmcs = @import("vmcs.zig");
 const vmam = @import("asm.zig");
@@ -14,6 +17,9 @@ const Phys = @import("surtr").Phys;
 
 const VmxError = vmx.VmxError;
 
+const vmwrite = vmx.vmwrite;
+const vmread = vmx.vmread;
+
 export fn blobGuest() callconv(.naked) noreturn {
     while (true) asm volatile ("hlt");
 }
@@ -22,7 +28,7 @@ const temp_stack_size: usize = mem.page_size;
 var temp_stack: [temp_stack_size + 0x10]u8 align(0x10) = @splat(0);
 
 export fn setHostStack(rsp: u64) callconv(.c) void {
-    vmx.vmwrite(vmcs.host.rsp, rsp) catch {};
+    vmwrite(vmcs.host.rsp, rsp) catch {};
 }
 
 export fn vmexitHandler() noreturn {
@@ -43,6 +49,8 @@ pub const Vcpu = struct {
     vmcs_region: *VmcsRegion = undefined,
     guest_regs: vmx.GuestRegisters = undefined,
     launch_done: bool = false,
+    host_msr: msr.ShadowMsr = undefined,
+    guest_msr: msr.ShadowMsr = undefined,
 
     pub fn new(vpid: u16) Self {
         return .{ .vpid = vpid };
@@ -70,21 +78,24 @@ pub const Vcpu = struct {
         try setupEntryCtrls(self);
         try setupHostState(self);
         try setupGuestState(self);
+
+        try registerMsrs(self, allocator);
     }
 
     pub fn setEptp(self: *Self, eptp: ept.Eptp, host_start: [*]u8) VmxError!void {
         self.eptp = eptp;
         self.guest_base = ymir.mem.virt2phys(host_start);
-        try vmx.vmwrite(vmcs.ctrl.eptp, eptp);
+        try vmwrite(vmcs.ctrl.eptp, eptp);
     }
 
     pub fn loop(self: *Self) VmxError!void {
         const func: [*]const u8 = @ptrCast(&blobGuest);
         const guest_map: [*]u8 = @ptrFromInt(mem.phys2virt(self.guest_base));
         @memcpy(guest_map[0..0x20], func[0..0x20]);
-        try vmx.vmwrite(vmcs.guest.rip, 0);
+        // try vmx.vmwrite(vmcs.guest.rip, 0);
 
         while (true) {
+            try updateMsrs(self);
             self.vmentry() catch |err| {
                 log.err("VM-entry failed: {}", .{err});
                 if (err == VmxError.VmxStatusAvailable) {
@@ -121,6 +132,18 @@ pub const Vcpu = struct {
                 try self.stepNextInst();
                 log.debug("HLT", .{});
             },
+            .cpuid => {
+                try cpuid.handleCpuidExit(self);
+                try self.stepNextInst();
+            },
+            .rdmsr => {
+                try msr.handleRdmsrExit(self);
+                try self.stepNextInst();
+            },
+            .wrmsr => {
+                try msr.handleWrmsrExit(self);
+                try self.stepNextInst();
+            },
             else => {
                 log.err("Unhandled VM-exit: reason={}", .{exit_info.basic_reason});
                 self.abort();
@@ -130,10 +153,10 @@ pub const Vcpu = struct {
 
     fn stepNextInst(_: *Self) VmxError!void {
         const rip = try vmx.vmread(vmcs.guest.rip);
-        try vmx.vmwrite(vmcs.guest.rip, rip + try vmx.vmread(vmcs.ro.exit_inst_len));
+        try vmwrite(vmcs.guest.rip, rip + try vmx.vmread(vmcs.ro.exit_inst_len));
     }
 
-    fn abort(self: *Self) noreturn {
+    pub fn abort(self: *Self) noreturn {
         @branchHint(.cold);
         self.dump() catch log.err("Failed to dump VM information", .{});
         ymir.endlessHalt();
@@ -144,7 +167,6 @@ pub const Vcpu = struct {
     }
 
     fn printGuestState(self: *Self) VmxError!void {
-        const vmread = vmx.vmread;
         log.err("=== vCPU Information ===", .{});
         log.err("[Guest State]", .{});
         log.err("RIP: 0x{X:0>16}", .{try vmread(vmcs.guest.rip)});
@@ -179,6 +201,46 @@ pub const Vcpu = struct {
     }
 };
 
+fn registerMsrs(vcpu: *Vcpu, allocator: Allocator) !void {
+    vcpu.host_msr = try msr.ShadowMsr.init(allocator);
+    vcpu.guest_msr = try msr.ShadowMsr.init(allocator);
+
+    const hm = &vcpu.host_msr;
+    const gm = &vcpu.guest_msr;
+
+    // Host MSRs.
+    hm.set(.tsc_aux, am.readMsr(.tsc_aux));
+    hm.set(.star, am.readMsr(.star));
+    hm.set(.lstar, am.readMsr(.lstar));
+    hm.set(.cstar, am.readMsr(.cstar));
+    hm.set(.fmask, am.readMsr(.fmask));
+    hm.set(.kernel_gs_base, am.readMsr(.kernel_gs_base));
+
+    // Guest MSRs.
+    gm.set(.tsc_aux, 0);
+    gm.set(.star, 0);
+    gm.set(.lstar, 0);
+    gm.set(.cstar, 0);
+    gm.set(.fmask, 0);
+    gm.set(.kernel_gs_base, 0);
+
+    // Init MSR data in VMCS.
+    try vmwrite(vmcs.ctrl.exit_msr_load_address, hm.phys());
+    try vmwrite(vmcs.ctrl.exit_msr_store_address, gm.phys());
+    try vmwrite(vmcs.ctrl.entry_msr_load_address, gm.phys());
+}
+
+fn updateMsrs(vcpu: *Vcpu) VmxError!void {
+    // Save host MSRs.
+    for (vcpu.host_msr.savedEnts()) |ent| {
+        vcpu.host_msr.setByIndex(ent.index, am.readMsr(@enumFromInt(ent.index)));
+    }
+    // Update MSR counts.
+    try vmwrite(vmcs.ctrl.vexit_msr_load_count, vcpu.host_msr.num_ents);
+    try vmwrite(vmcs.ctrl.exit_msr_store_count, vcpu.guest_msr.num_ents);
+    try vmwrite(vmcs.ctrl.entry_msr_load_count, vcpu.guest_msr.num_ents);
+}
+
 const VmcsRegion = packed struct {
     vmcs_revision_id: u31,
     zero: u1 = 0,
@@ -207,6 +269,7 @@ fn setupExecCtrls(_: *Vcpu, _: Allocator) VmxError!void {
     var ppb_exec_ctrl = try vmcs.PrimaryProcExecCtrl.store();
     ppb_exec_ctrl.hlt = true;
     ppb_exec_ctrl.activate_secondary_controls = true;
+    ppb_exec_ctrl.use_msr_bitmap = false;
     try adjustRegMandatoryBits(
         ppb_exec_ctrl,
         if (basic_msr.true_control) am.readMsr(.vmx_true_procbased_ctls) else am.readMsr(.vmx_procbased_ctls),
@@ -226,6 +289,10 @@ fn setupExitCtrls(_: *Vcpu) VmxError!void {
     var exit_ctrl = try vmcs.PrimaryExitCtrl.store();
     exit_ctrl.host_addr_space_size = true;
     exit_ctrl.load_ia32_efer = true;
+    exit_ctrl.load_ia32_efer = true;
+    exit_ctrl.save_ia32_efer = true;
+    exit_ctrl.load_ia32_pat = true;
+    exit_ctrl.save_ia32_pat = true;
     try adjustRegMandatoryBits(
         exit_ctrl,
         if (basic_msr.true_control) am.readMsr(.vmx_true_exit_ctls) else am.readMsr(.vmx_exit_ctls),
@@ -236,14 +303,14 @@ fn setupEntryCtrls(_: *Vcpu) VmxError!void {
 
     var entry_ctrl = try vmcs.EntryCtrl.store();
     entry_ctrl.ia32e_mode_guest = false;
+    entry_ctrl.load_ia32_efer = true;
+    entry_ctrl.load_ia32_pat = true;
     try adjustRegMandatoryBits(
         entry_ctrl,
         if (basic_msr.true_control) am.readMsr(.vmx_true_entry_ctls) else am.readMsr(.vmx_entry_ctls),
     ).load();
 }
 fn setupHostState(_: *Vcpu) VmxError!void {
-    const vmwrite = vmx.vmwrite;
-
     try vmwrite(vmcs.host.cr0, am.readCr0());
     try vmwrite(vmcs.host.cr3, am.readCr3());
     try vmwrite(vmcs.host.cr4, am.readCr4());
@@ -267,16 +334,17 @@ fn setupHostState(_: *Vcpu) VmxError!void {
 
     try vmwrite(vmcs.host.efer, am.readMsr(.efer));
 }
-fn setupGuestState(_: *Vcpu) VmxError!void {
-    const vmwrite = vmx.vmwrite;
-
+fn setupGuestState(vcpu: *Vcpu) VmxError!void {
     var cr0 = std.mem.zeroes(am.Cr0);
     cr0.pe = true;
     cr0.ne = true;
     cr0.pg = false;
+    var cr4: am.Cr4 = @bitCast(try vmread(vmcs.guest.cr4));
+    cr4.pae = false;
+    cr4.vmxe = true;
     try vmwrite(vmcs.guest.cr0, cr0);
     try vmwrite(vmcs.guest.cr3, am.readCr3());
-    try vmwrite(vmcs.guest.cr4, am.readCr4());
+    try vmwrite(vmcs.guest.cr4, cr4);
 
     try vmwrite(vmcs.guest.cs_base, 0);
     try vmwrite(vmcs.guest.ss_base, 0);
@@ -298,7 +366,7 @@ fn setupGuestState(_: *Vcpu) VmxError!void {
     try vmwrite(vmcs.guest.ldtr_limit, 0);
     try vmwrite(vmcs.guest.idtr_limit, 0);
     try vmwrite(vmcs.guest.gdtr_limit, 0);
-    try vmwrite(vmcs.guest.cs_sel, am.readSegSelector(.cs));
+    try vmwrite(vmcs.guest.cs_sel, 0);
     try vmwrite(vmcs.guest.ss_sel, 0);
     try vmwrite(vmcs.guest.ds_sel, 0);
     try vmwrite(vmcs.guest.es_sel, 0);
@@ -314,8 +382,8 @@ fn setupGuestState(_: *Vcpu) VmxError!void {
         .desc_type = .code_data,
         .dpl = 0,
         .granularity = .kbyte,
-        .long = true,
-        .db = 0,
+        .long = false,
+        .db = 1,
     };
     const ds_right = vmx.SegmentRights{
         .rw = true,
@@ -357,8 +425,9 @@ fn setupGuestState(_: *Vcpu) VmxError!void {
     try vmwrite(vmcs.guest.tr_rights, tr_right);
     try vmwrite(vmcs.guest.ldtr_rights, ldtr_right);
 
-    try vmwrite(vmcs.guest.rip, &blobGuest);
-    try vmwrite(vmcs.guest.efer, am.readMsr(.efer));
+    try vmwrite(vmcs.guest.rip, linux.layout.kernel_base);
+    vcpu.guest_regs.rsi = linux.layout.bootparam;
+    try vmwrite(vmcs.guest.efer, 0);
     try vmwrite(vmcs.guest.rflags, am.FlagsRegister.new());
 
     try vmwrite(vmcs.guest.vmcs_link_pointer, std.math.maxInt(u64));
