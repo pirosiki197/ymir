@@ -67,7 +67,7 @@ fn writeByteCom1(byte: u8) void {
     writeByte(byte, .com1);
 }
 
-fn writeByte(byte: u8, port: Port) void {
+pub fn writeByte(byte: u8, port: Port) void {
     while ((am.inb(@intFromEnum(port) + offsets.lsr) & 0b0010_0000) == 0) {
         am.relax();
     }

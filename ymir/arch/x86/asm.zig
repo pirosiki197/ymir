@@ -15,11 +15,46 @@ pub inline fn inb(port: u16) u8 {
         : [port] "{dx}" (port),
     );
 }
+
+pub inline fn inw(port: u16) u16 {
+    return asm volatile (
+        \\inw %[port], %[ret]
+        : [ret] "={ax}" (-> u16),
+        : [port] "{dx}" (port),
+    );
+}
+
+pub inline fn inl(port: u16) u32 {
+    return asm volatile (
+        \\inl %[port], %[ret]
+        : [ret] "={eax}" (-> u32),
+        : [port] "{dx}" (port),
+    );
+}
+
 pub inline fn outb(value: u8, port: u16) void {
     asm volatile (
         \\outb %[value], %[port]
         :
         : [value] "{al}" (value),
+          [port] "{dx}" (port),
+    );
+}
+
+pub inline fn outw(value: u16, port: u16) void {
+    asm volatile (
+        \\outw %[value], %[port]
+        :
+        : [value] "{ax}" (value),
+          [port] "{dx}" (port),
+    );
+}
+
+pub inline fn outl(value: u32, port: u16) void {
+    asm volatile (
+        \\outl %[value], %[port]
+        :
+        : [value] "{eax}" (value),
           [port] "{dx}" (port),
     );
 }
@@ -169,6 +204,31 @@ pub const Cr4 = packed struct(u64) {
     pks: bool,
     /// Reserved.
     _reserved4: u39 = 0,
+};
+
+pub const Efer = packed struct(u64) {
+    /// System call extensions.
+    sce: bool,
+    /// ReservedZ.
+    reserved1: u7 = 0,
+    /// Long mode enable.
+    lme: bool,
+    ///
+    ignored: bool,
+    /// Long mode active.
+    lma: bool,
+    /// No execute enable.
+    nxe: bool,
+    /// Secure virtual machine enable.
+    svme: bool,
+    /// Long mode segment limit enable.
+    lmsle: bool,
+    /// Fast FXSAVE/FXRSTOR.
+    ffxsr: bool,
+    /// Translation cache extension.
+    tce: bool,
+    /// ReservedZ.
+    reserved2: u48 = 0,
 };
 
 pub inline fn readCr0() u64 {
@@ -462,19 +522,63 @@ pub inline fn vmxon(vmxon_region: mem.Phys) VmxError!void {
     try vmxerr(rflags);
 }
 
+/// EFLAGS register.
 pub const FlagsRegister = packed struct(u64) {
-    /// Carry flag
+    /// Carry flag.
     cf: bool,
-    _reserved0: u1 = 1,
-    _other_fields: u4,
-    /// Zero flag
+    /// Reserved. Must be 1.
+    _reservedO: u1 = 1,
+    /// Parity flag.
+    pf: bool,
+    /// Reserved. Must be 0.
+    _reserved1: u1 = 0,
+    /// Auxiliary carry flag.
+    af: bool,
+    /// Reserved. Must be 0.
+    _reserved2: u1 = 0,
+    /// Zero flag.
     zf: bool,
-    _other_fields2: u57,
+    /// Sign flag.
+    sf: bool,
+    /// Trap flag.
+    tf: bool,
+    /// Interrupt enable flag.
+    ief: bool,
+    /// Direction flag.
+    df: bool,
+    /// Overflow flag.
+    of: bool,
+    /// IOPL (I/O privilege level).
+    iopl: u2,
+    /// Nested task flag.
+    nt: bool,
+    /// Reserved. Must be 0.
+    md: u1 = 0,
+    /// Resume flag.
+    rf: bool,
+    /// Virtual 8086 mode flag.
+    vm: bool,
+    // Alignment check.
+    ac: bool,
+    /// Virtual interrupt flag.
+    vif: bool,
+    /// Virtual interrupt pending.
+    vip: bool,
+    /// CPUID support.
+    id: bool,
+    /// Reserved.
+    _reserved3: u8,
+    /// Reserved.
+    aes: bool,
+    /// Alternate instruction set enabled.
+    ai: bool,
+    /// Reserved. Must be 0.
+    _reserved4: u32 = 0,
 
     pub fn new() FlagsRegister {
-        var res = std.mem.zeroes(FlagsRegister);
-        res._reserved0 = 1;
-        return res;
+        var ret = std.mem.zeroes(FlagsRegister);
+        ret._reservedO = 1;
+        return ret;
     }
 };
 
@@ -500,4 +604,25 @@ pub inline fn vmptrld(vmcs_region: mem.Phys) VmxError!void {
         : [vmcs_phys] "r" (&vmcs_region),
         : .{ .cc = true, .memory = true });
     try vmxerr(rflags);
+}
+
+const InvvpidType = enum(u64) {
+    individual_address = 0,
+    single_context = 1,
+    all_context = 2,
+    single_global = 3,
+};
+
+pub inline fn invvpid(comptime inv_type: InvvpidType, vpid: u16) void {
+    const descriptor: packed struct(u128) {
+        vpid: u16,
+        _reserved: u48 = 0,
+        linear_addr: u64 = 0,
+    } align(128) = .{ .vpid = vpid };
+    asm volatile (
+        \\invvpid (%[descriptor]), %[inv_type]
+        :
+        : [inv_type] "r" (@intFromEnum(inv_type)),
+          [descriptor] "r" (&descriptor),
+        : .{ .memory = true });
 }

@@ -11,6 +11,7 @@ pub const VmxError = error{
     VmxStatusAvailable,
     OutOfMemory,
     AlreadyMapped,
+    InterruptFull,
 };
 
 pub fn mapGuest(host_pages: []u8, allocator: Allocator) VmxError!ept.Eptp {
@@ -146,4 +147,109 @@ pub const GuestRegisters = extern struct {
     xmm5: u128 align(16),
     xmm6: u128 align(16),
     xmm7: u128 align(16),
+};
+
+pub const qual = struct {
+    pub const QualCr = packed struct(u64) {
+        index: u4,
+        access_type: AccessType,
+        lmsw_type: LmswOperandType,
+        _reserved1: u1,
+        reg: Register,
+        _reserved2: u4,
+        lmsw_source: u16,
+        _reserved3: u32,
+
+        const AccessType = enum(u2) {
+            mov_to = 0,
+            mov_from = 1,
+            clts = 2,
+            lmsw = 3,
+        };
+        const LmswOperandType = enum(u1) {
+            reg = 0,
+            mem = 1,
+        };
+        const Register = enum(u4) {
+            rax = 0,
+            rcx = 1,
+            rdx = 2,
+            rbx = 3,
+            rsp = 4,
+            rbp = 5,
+            rsi = 6,
+            rdi = 7,
+            r8 = 8,
+            r9 = 9,
+            r10 = 10,
+            r11 = 11,
+            r12 = 12,
+            r13 = 13,
+            r14 = 14,
+            r15 = 15,
+        };
+    };
+    pub const QualIo = packed struct(u64) {
+        /// Size of access.
+        size: Size,
+        /// Direction of the attempted access.
+        direction: Direction,
+        /// String instruction.
+        string: bool,
+        /// Rep prefix.
+        rep: bool,
+        /// Operand encoding.
+        operand_encoding: OperandEncoding,
+        /// Not used.
+        _reserved2: u9,
+        /// Port number.
+        port: u16,
+        /// Not used.
+        _reserved3: u32,
+
+        const Size = enum(u3) {
+            /// Byte.
+            byte = 0,
+            /// Word.
+            word = 1,
+            /// Dword.
+            dword = 3,
+        };
+
+        const Direction = enum(u1) {
+            out = 0,
+            in = 1,
+        };
+
+        const OperandEncoding = enum(u1) {
+            /// I/O instruction uses DX register as port number.
+            dx = 0,
+            /// I/O instruction uses immediate value as port number.
+            imm = 1,
+        };
+    };
+};
+
+pub const EntryIntrInfo = packed struct(u32) {
+    vector: u8,
+    type: Type,
+    ec_available: bool,
+    _notused: u19 = 0,
+    valid: bool,
+
+    const Type = enum(u3) {
+        external = 0,
+        _unused1 = 1,
+        nmi = 2,
+        hw = 3,
+        _unused2 = 4,
+        priviledged_sw = 5,
+        exception = 6,
+        _unused3 = 7,
+    };
+
+    const Kind = enum {
+        entry,
+        exit,
+    };
 };

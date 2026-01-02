@@ -3,22 +3,29 @@ const log = std.log.scoped(.vcpu);
 const Allocator = std.mem.Allocator;
 
 const ymir = @import("ymir");
+const bits = ymir.bits;
 const mem = ymir.mem;
 const linux = ymir.linux;
 const am = @import("../asm.zig");
 const cpuid = @import("cpuid.zig");
+const cr = @import("cr.zig");
 const msr = @import("msr.zig");
+const io = @import("io.zig");
+const intr = @import("../interrupt.zig");
 const vmx = @import("common.zig");
 const vmcs = @import("vmcs.zig");
 const vmam = @import("asm.zig");
 const ept = @import("ept.zig");
 
 const Phys = @import("surtr").Phys;
+const IrqLine = @import("../pic.zig").IrqLine;
 
 const VmxError = vmx.VmxError;
 
 const vmwrite = vmx.vmwrite;
 const vmread = vmx.vmread;
+
+const qual = vmx.qual;
 
 export fn blobGuest() callconv(.naked) noreturn {
     while (true) asm volatile ("hlt");
@@ -51,9 +58,17 @@ pub const Vcpu = struct {
     launch_done: bool = false,
     host_msr: msr.ShadowMsr = undefined,
     guest_msr: msr.ShadowMsr = undefined,
+    ia32e_enabled: bool = false,
+    serial: io.Serial,
+    pic: io.Pic,
+    pending_irq: u16 = 0,
 
     pub fn new(vpid: u16) Self {
-        return .{ .vpid = vpid };
+        return .{
+            .vpid = vpid,
+            .serial = .init,
+            .pic = .init,
+        };
     }
 
     pub fn virtualize(self: *Self, allocator: Allocator) VmxError!void {
@@ -89,6 +104,7 @@ pub const Vcpu = struct {
     }
 
     pub fn loop(self: *Self) VmxError!void {
+        intr.subscribe(self, intrSubscribeCallback) catch return error.InterruptFull;
         const func: [*]const u8 = @ptrCast(&blobGuest);
         const guest_map: [*]u8 = @ptrFromInt(mem.phys2virt(self.guest_base));
         @memcpy(guest_map[0..0x20], func[0..0x20]);
@@ -129,8 +145,16 @@ pub const Vcpu = struct {
     fn handleExit(self: *Self, exit_info: vmcs.ExitInfo) VmxError!void {
         switch (exit_info.basic_reason) {
             .hlt => {
+                while (!try self.injectExtIntr()) {
+                    asm volatile (
+                        \\sti
+                        \\hlt
+                        \\cli
+                    );
+                }
+                try vmwrite(vmcs.guest.activity_state, 0);
+                try vmwrite(vmcs.guest.interruptibility_state, 0);
                 try self.stepNextInst();
-                log.debug("HLT", .{});
             },
             .cpuid => {
                 try cpuid.handleCpuidExit(self);
@@ -144,11 +168,80 @@ pub const Vcpu = struct {
                 try msr.handleWrmsrExit(self);
                 try self.stepNextInst();
             },
+            .cr => {
+                const q = try getExitQual(qual.QualCr);
+                try cr.handleAccessCr(self, q);
+                try self.stepNextInst();
+            },
+            .io => {
+                const q = try getExitQual(qual.QualIo);
+                try io.handleIo(self, q);
+                try self.stepNextInst();
+            },
+            .extintr => {
+                asm volatile (
+                    \\sti
+                    \\nop
+                    \\cli
+                );
+                _ = try self.injectExtIntr();
+            },
             else => {
                 log.err("Unhandled VM-exit: reason={}", .{exit_info.basic_reason});
                 self.abort();
             },
         }
+    }
+
+    fn intrSubscribeCallback(self_: *anyopaque, ctx: *intr.Context) void {
+        const self: *Self = @ptrCast(@alignCast(self_));
+        const vector = ctx.vector;
+
+        if (0x20 <= vector and vector < 0x20 + 16) {
+            self.pending_irq |= bits.tobit(u16, vector - 0x20);
+        }
+    }
+
+    fn injectExtIntr(self: *Self) VmxError!bool {
+        const pending = self.pending_irq;
+
+        // 1. No interrupts to inject
+        if (pending == 0) return false;
+        // 2. PIC is not initialized
+        if (self.pic.primary_phase != .initialized) return false;
+        // 3. Guest is blocking interrupts
+        const eflags: am.FlagsRegister = @bitCast(try vmread(vmcs.guest.rflags));
+        if (!eflags.ief) return false;
+
+        const is_secondary_masked = bits.isset(self.pic.primary_mask, IrqLine.secondary);
+        for (0..15) |i| {
+            if (is_secondary_masked and i >= 8) break;
+
+            const irq: IrqLine = @enumFromInt(i);
+            const irq_bit = bits.tobit(u16, irq);
+            if (pending & irq_bit == 0) continue;
+
+            const is_masked = if (irq.isPrimary()) b: {
+                break :b bits.isset(self.pic.primary_mask, irq.delta());
+            } else b: {
+                const is_irq_masked = bits.isset(self.pic.secondary_mask, irq.delta());
+                break :b is_secondary_masked or is_irq_masked;
+            };
+            if (is_masked) continue;
+
+            const intr_info = vmx.EntryIntrInfo{
+                .vector = irq.delta() + if (irq.isPrimary()) self.pic.primary_base else self.pic.secondary_base,
+                .type = .external,
+                .ec_available = false,
+                .valid = true,
+            };
+            try vmwrite(vmcs.ctrl.entry_intr_info, intr_info);
+
+            self.pending_irq &= ~irq_bit;
+            return true;
+        }
+
+        return false;
     }
 
     fn stepNextInst(_: *Self) VmxError!void {
@@ -260,7 +353,8 @@ const VmcsRegion = packed struct {
 fn setupExecCtrls(_: *Vcpu, _: Allocator) VmxError!void {
     const basic_msr = am.readMsrVmxBasic();
 
-    const pin_exec_ctrl = try vmcs.PinExecCtrl.store();
+    var pin_exec_ctrl = try vmcs.PinExecCtrl.store();
+    pin_exec_ctrl.external_interrupt = true;
     try adjustRegMandatoryBits(
         pin_exec_ctrl,
         if (basic_msr.true_control) am.readMsr(.vmx_true_pinbased_ctls) else am.readMsr(.vmx_pinbased_ctls),
@@ -270,6 +364,7 @@ fn setupExecCtrls(_: *Vcpu, _: Allocator) VmxError!void {
     ppb_exec_ctrl.hlt = true;
     ppb_exec_ctrl.activate_secondary_controls = true;
     ppb_exec_ctrl.use_msr_bitmap = false;
+    ppb_exec_ctrl.unconditional_io = true;
     try adjustRegMandatoryBits(
         ppb_exec_ctrl,
         if (basic_msr.true_control) am.readMsr(.vmx_true_procbased_ctls) else am.readMsr(.vmx_procbased_ctls),
@@ -278,10 +373,14 @@ fn setupExecCtrls(_: *Vcpu, _: Allocator) VmxError!void {
     var ppb_exec_ctrl2 = try vmcs.SecondaryProcExecCtrl.store();
     ppb_exec_ctrl2.ept = true;
     ppb_exec_ctrl2.unrestricted_guest = true;
+    ppb_exec_ctrl2.enable_invpcid = true;
     try adjustRegMandatoryBits(
         ppb_exec_ctrl2,
         am.readMsr(.vmx_procbased_ctls2),
     ).load();
+
+    try vmwrite(vmcs.ctrl.cr0_mask, std.math.maxInt(u64));
+    try vmwrite(vmcs.ctrl.cr4_mask, std.math.maxInt(u64));
 }
 fn setupExitCtrls(_: *Vcpu) VmxError!void {
     const basic_msr = am.readMsrVmxBasic();
@@ -345,6 +444,8 @@ fn setupGuestState(vcpu: *Vcpu) VmxError!void {
     try vmwrite(vmcs.guest.cr0, cr0);
     try vmwrite(vmcs.guest.cr3, am.readCr3());
     try vmwrite(vmcs.guest.cr4, cr4);
+    try vmwrite(vmcs.ctrl.cr0_read_shadow, cr0);
+    try vmwrite(vmcs.ctrl.cr4_read_shadow, cr4);
 
     try vmwrite(vmcs.guest.cs_base, 0);
     try vmwrite(vmcs.guest.ss_base, 0);
@@ -490,3 +591,7 @@ const VmxonRegion = packed struct {
         return @ptrCast(@alignCast(page.ptr));
     }
 };
+
+fn getExitQual(T: anytype) VmxError!T {
+    return @bitCast(@as(u64, try vmread(vmcs.ro.exit_qual)));
+}

@@ -88,8 +88,9 @@ pub fn handleRdmsrExit(vcpu: *Vcpu) VmxError!void {
         .gs_base => setRetVal(vcpu, try vmx.vmread(vmcs.guest.gs_base)),
         .kernel_gs_base => shadowRead(vcpu, msr_kind),
         else => {
-            log.err("Unhandled RDMSR: {}", .{msr_kind});
-            vcpu.abort();
+            log.warn("Unhandled RDMSR: {}", .{msr_kind});
+            setRetVal(vcpu, 0);
+            // vcpu.abort();
         },
     }
 }

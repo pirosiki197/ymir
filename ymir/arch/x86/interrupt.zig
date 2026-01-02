@@ -16,10 +16,38 @@ pub fn init() void {
 }
 
 pub const Handler = *const fn (*Context) void;
-var handlers: [256]Handler = @splat(unhandledHandler);
+pub var handlers: [256]Handler = @splat(unhandledHandler);
+
+const max_subscribers = 10;
+var subscribers: [max_subscribers]?Subscriber = @splat(null);
+
+pub const Subscriber = struct {
+    /// Context of the subscriber.
+    self: *anyopaque,
+    /// Context of the interrupt.
+    callback: Callback,
+
+    pub const Callback = *const fn (*anyopaque, *Context) void;
+};
+
+pub fn subscribe(ctx: *anyopaque, callback: Subscriber.Callback) !void {
+    for (subscribers, 0..) |sub, i| {
+        if (sub == null) {
+            subscribers[i] = Subscriber{
+                .callback = callback,
+                .self = ctx,
+            };
+            return;
+        }
+    }
+    return error.SubscriberFull;
+}
 
 pub fn dispatch(ctx: *Context) void {
     const vector = ctx.vector;
+    for (subscribers) |subscriber| {
+        if (subscriber) |s| s.callback(s.self, ctx);
+    }
     handlers[vector](ctx);
 }
 
