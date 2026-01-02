@@ -78,8 +78,13 @@ fn kernelMain(boot_info: surtr.BootInfo) !void {
         const ptr: [*]u8 = @ptrFromInt(ymir.mem.phys2virt(guest_info.guest_image));
         break :b ptr[0..guest_info.guest_size];
     };
+    const initrd = b: {
+        const ptr: [*]u8 = @ptrFromInt(ymir.mem.phys2virt(guest_info.initrd_addr));
+        break :b ptr[0..guest_info.initrd_size];
+    };
+    log.info("Initrd: 0x{X:0>16} (size=0x{X})", .{ @intFromPtr(initrd.ptr), initrd.len });
     log.info("setup guest memory", .{});
-    try vm.setupGuestMemory(guest_kernel, general_allocator, &mem.page_allocator_instance);
+    try vm.setupGuestMemory(guest_kernel, initrd, general_allocator, &mem.page_allocator_instance);
     log.info("Setup guest memory", .{});
     log.info("Starting the virtual machine...", .{});
     try vm.loop();

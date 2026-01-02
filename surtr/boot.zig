@@ -181,6 +181,17 @@ pub fn main() uefi.Error!void {
     const guest_start = @intFromPtr(guest_memory_pages.ptr);
     log.info("Loaded guest kernel image @ 0x{X:0>16} ~ 0x{X:0>16}", .{ guest_start, guest_start + guest_size });
 
+    const initrd = try openFile(root_dir, "rootfs.cpio.gz");
+    const initrd_info_buffer_size: usize = @sizeOf(FileInfo) + 0x100;
+    var initrd_info_buffer: [initrd_info_buffer_size]u8 align(@alignOf(FileInfo)) = undefined;
+    const initrd_info = try initrd.getInfo(.file, &initrd_info_buffer);
+
+    const initrd_size_pages = (initrd_info.file_size + (page_size - 1)) / page_size;
+    const initrd_memory_pages = try boot_service.allocatePages(.any, .loader_data, initrd_size_pages);
+
+    const initrd_size = try initrd.read(std.mem.sliceAsBytes(initrd_memory_pages));
+    const initrd_start = @intFromPtr(initrd_memory_pages.ptr);
+
     // clean up
     boot_service.freePool(header_buffer.ptr) catch |err| {
         log.err("Failed to free memory for kernel ELF header: {}", .{err});
@@ -219,6 +230,8 @@ pub fn main() uefi.Error!void {
         .guest_info = .{
             .guest_image = @ptrFromInt(guest_start),
             .guest_size = guest_size,
+            .initrd_addr = @ptrFromInt(initrd_start),
+            .initrd_size = initrd_size,
         },
     };
 

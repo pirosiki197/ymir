@@ -52,6 +52,7 @@ pub const Vm = struct {
     pub fn setupGuestMemory(
         self: *Self,
         guest_image: []u8,
+        initrd: []u8,
         allocator: Allocator,
         page_allocator: *PageAllocator,
     ) Error!void {
@@ -60,7 +61,7 @@ pub const Vm = struct {
             mem.page_size_2mb,
         ) orelse return Error.OutOfMemory;
 
-        try self.loadKernel(guest_image);
+        try self.loadKernel(guest_image, initrd);
 
         const eptp = try impl.mapGuest(self.guest_mem, allocator);
         try self.vcpu.setEptp(eptp, self.guest_mem.ptr);
@@ -72,7 +73,7 @@ pub const Vm = struct {
         try self.vcpu.loop();
     }
 
-    fn loadKernel(self: *Self, kernel: []u8) Error!void {
+    fn loadKernel(self: *Self, kernel: []u8, initrd: []u8) Error!void {
         const guest_mem = self.guest_mem;
 
         var bp = BootParams.from(kernel);
@@ -87,6 +88,10 @@ pub const Vm = struct {
         bp.hdr.loadflags.keep_segments = true; // we set CS/DS/SS/ES to flag segments with a base of 0.
         bp.hdr.cmd_line_ptr = linux.layout.cmdline;
         bp.hdr.vid_mode = 0xFFFF; // VGA (normal)
+        bp.hdr.ramdisk_image = linux.layout.initrd;
+        bp.hdr.ramdisk_size = @truncate(initrd.len);
+
+        try loadImage(guest_mem, initrd, linux.layout.initrd);
 
         // Setup E820 map
         bp.addE820entry(0, linux.layout.kernel_base, .ram);
