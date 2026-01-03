@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    const optimize: std.builtin.OptimizeMode = .ReleaseSafe;
+    const optimize: std.builtin.OptimizeMode = .ReleaseFast;
 
     const s_log_level = b.option(
         []const u8,
@@ -119,6 +119,22 @@ pub fn build(b: *std.Build) void {
     const run_ymir_tests = b.addRunArtifact(ymir_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_ymir_tests.step);
+
+    const ymirsh = b.addExecutable(.{
+        .name = "ymirsh",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("ymirsh/main.zig"),
+            .target = b.resolveTargetQuery(.{
+                .cpu_arch = .x86_64,
+                .os_tag = .linux,
+                .cpu_model = .baseline,
+            }),
+            .optimize = optimize,
+        }),
+        .linkage = .static,
+    });
+    ymirsh.root_module.addOptions("options", options);
+    b.installArtifact(ymirsh);
 
     const qemu_args = [_][]const u8{
         "sudo",

@@ -13,6 +13,7 @@ const msr = @import("msr.zig");
 const io = @import("io.zig");
 const intr = @import("../interrupt.zig");
 const vmx = @import("common.zig");
+const vmc = @import("vmc.zig");
 const vmcs = @import("vmcs.zig");
 const vmam = @import("asm.zig");
 const ept = @import("ept.zig");
@@ -185,6 +186,10 @@ pub const Vcpu = struct {
                     \\cli
                 );
                 _ = try self.injectExtIntr();
+            },
+            .vmcall => {
+                try vmc.handleVmcall(self);
+                try self.stepNextInst();
             },
             else => {
                 log.err("Unhandled VM-exit: reason={}", .{exit_info.basic_reason});
